@@ -1,0 +1,15 @@
+packages:
+  - apps/*
+
+# Supply chain hardening (pnpm settings live here instead of .npmrc).
+savePrefix: ''
+strictPeerDependencies: true
+# Refuse versions published less than 7 days ago (minutes).
+minimumReleaseAge: 10080
+# Only these packages may run install scripts.
+onlyBuiltDependencies:
+  - esbuild
+# Security overrides (each with advisory + reason; remove when upstream ships the fix).
+overrides:
+  # GHSA (high) zod <4.6.6, pinned exactly by @vercel/functions > @vercel/oidc > @vercel/cli-config.
+  '@vercel/cli-config>zod': 4.6.7

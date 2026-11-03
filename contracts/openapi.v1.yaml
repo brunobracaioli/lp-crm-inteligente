@@ -1,0 +1,378 @@
+openapi: 3.1.0
+info:
+  title: LP + CRM Inteligente API
+  version: 1.0.0-draft.2
+  description: |
+    Contrato API-first do backend (Vercel). Fonte da verdade para o front (LP — Codex) e para os testes.
+    Specs: docs/specs/lead-capture.md, docs/specs/tracking.md.
+    Política: deny by default. Rotas públicas declaram `security: []` + `x-public-justification`.
+    Rotas do CRM (/v1/crm/*) entram neste contrato na abertura da wave 9.
+
+    Changelog:
+    - 1.0.0-draft.2 (2026-11-03, Onda 0): `not_found` adicionado a `Problem.code` (rota inexistente →
+      404 genérico). Compatível: só adiciona um valor ao enum; clientes devem tratar `code`
+      desconhecido como erro genérico.
+servers:
+  - url: https://api.example.com
+    description: Produção (substituir pelo domínio final — Q4)
+  - url: http://localhost:3000
+    description: Desenvolvimento local
+
+# Deny by default: qualquer rota sem override exige o token de staff (wave 9).
+security:
+  - staffBearer: []
+
+tags:
+  - name: lead-capture
+  - name: platform
+  - name: internal
+
+paths:
+  /v1/leads:
+    post:
+      tags: [lead-capture]
+      operationId: submitLead
+      summary: Recebe uma submissão do formulário da LP
+      security: []
+      x-public-justification: >-
+        Formulário de visitantes anônimos. Controles compensatórios: Origin allowlist, rate limit,
+        Turnstile server-side, schema estrito, honeypot, idempotência (ADR-0005).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeadSubmissionRequest'
+      responses:
+        '202':
+          description: Aceito. Resposta idêntica para lead novo, existente ou descartado (anti-enumeração).
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadSubmissionAccepted'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /v1/health:
+    get:
+      tags: [platform]
+      operationId: getHealth
+      summary: Liveness (sem detalhes de dependências)
+      security: []
+      x-public-justification: Probe de disponibilidade; não expõe versão, dependências nem dados.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /internal/v1/outbox/dispatch:
+    post:
+      tags: [internal]
+      operationId: dispatchOutboxEvent
+      summary: Processa um evento do outbox (chamado apenas pelo QStash)
+      security:
+        - qstashSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outbox_event_id]
+              properties:
+                outbox_event_id: { type: string, format: uuid }
+      responses:
+        '200': { description: Todas as entregas concluídas ou definitivamente descartadas }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { description: Alguma entrega falhou de forma retentável (QStash deve retentar) }
+
+  /internal/v1/outbox/sweep:
+    post:
+      tags: [internal]
+      operationId: sweepOutbox
+      summary: Republica eventos pendentes órfãos (schedule QStash)
+      security:
+        - qstashSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        '200':
+          description: Varredura concluída
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [republished]
+                properties:
+                  republished: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    staffBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token do Supabase Auth (staff do CRM, wave 9). Verificado via JWKS; iss/aud/exp validados.
+    qstashSignature:
+      type: apiKey
+      in: header
+      name: Upstash-Signature
+      description: JWT assinado pelo QStash (current/next signing keys); valida iss, sub (URL), exp e hash do corpo bruto.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID por intenção de envio; reutilizar em retentativas. TTL 24 h.
+      schema: { type: string, format: uuid }
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, format: uuid }
+
+  headers:
+    XRequestId:
+      description: Correlation ID da requisição (gerado se não enviado).
+      schema: { type: string, format: uuid }
+    RetryAfter:
+      description: Segundos até poder tentar novamente.
+      schema: { type: integer, minimum: 1 }
+
+  schemas:
+    Name:
+      type: string
+      minLength: 1
+      maxLength: 60
+      pattern: "^[\\p{L}\\p{M}](?:[\\p{L}\\p{M}' .-]*[\\p{L}\\p{M}.])?$"
+    CompanyText:
+      type: string
+      minLength: 2
+      maxLength: 120
+      pattern: "^[\\p{L}\\p{M}\\p{N}](?:[\\p{L}\\p{M}\\p{N} .,&'()/+-]*[\\p{L}\\p{M}\\p{N}.)])?$"
+    AreaOfExpertise:
+      type: string
+      enum:
+        - marketing_advertising
+        - technology
+        - ecommerce_retail
+        - infoproducts_creators
+        - health
+        - education
+        - finance
+        - real_estate
+        - industry
+        - professional_services
+        - legal
+        - agribusiness
+        - logistics
+        - food_hospitality
+        - construction
+        - public_sector_nonprofit
+        - other
+    CompanySize:
+      type: string
+      enum: [solo, 2_10, 11_50, 51_200, 201_1000, 1000_plus]
+    ConsentValue:
+      type: string
+      enum: [granted, denied]
+    ClickId:
+      type: [string, 'null']
+      maxLength: 500
+      pattern: "^[A-Za-z0-9._\\-~]+$"
+    UtmValue:
+      type: [string, 'null']
+      maxLength: 150
+    HttpUrl:
+      type: [string, 'null']
+      maxLength: 2000
+      format: uri
+      pattern: "^https?://"
+
+    LeadSubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [form_key, turnstile_token, first_name, last_name, email, whatsapp, company, area_of_expertise, privacy_consent]
+      properties:
+        form_key: { type: string, pattern: "^frm_[a-z0-9_]{3,40}$" }
+        turnstile_token: { type: string, minLength: 1, maxLength: 2048 }
+        first_name: { $ref: '#/components/schemas/Name' }
+        last_name:
+          allOf: [{ $ref: '#/components/schemas/Name' }]
+          maxLength: 80
+        email: { type: string, format: email, maxLength: 254 }
+        whatsapp:
+          type: string
+          maxLength: 32
+          description: Qualquer formatação; normalizado para E.164 (sem DDI assume BR).
+        company: { $ref: '#/components/schemas/CompanyText' }
+        area_of_expertise: { $ref: '#/components/schemas/AreaOfExpertise' }
+        area_of_expertise_other:
+          type: [string, 'null']
+          minLength: 2
+          maxLength: 80
+          description: Obrigatório se area_of_expertise = other; proibido caso contrário.
+        job_title: { type: [string, 'null'], minLength: 2, maxLength: 100 }
+        company_size:
+          oneOf:
+            - { $ref: '#/components/schemas/CompanySize' }
+            - { type: 'null' }
+        company_website:
+          type: [string, 'null']
+          maxLength: 200
+          description: http(s), sem credenciais, sem IP literal/localhost. Nunca buscado pelo servidor.
+        message: { type: [string, 'null'], maxLength: 1000 }
+        marketing_opt_in: { type: boolean, default: false }
+        privacy_consent: { type: boolean, const: true }
+        hp:
+          type: string
+          maxLength: 200
+          description: Honeypot. Deve ser vazio.
+        consent:
+          type: object
+          additionalProperties: false
+          properties:
+            analytics_storage: { $ref: '#/components/schemas/ConsentValue' }
+            ad_storage: { $ref: '#/components/schemas/ConsentValue' }
+            ad_user_data: { $ref: '#/components/schemas/ConsentValue' }
+            ad_personalization: { $ref: '#/components/schemas/ConsentValue' }
+        tracking:
+          type: object
+          additionalProperties: false
+          properties:
+            event_id: { type: string, format: uuid, description: "Mesmo valor do eventID do Pixel (dedup CAPI)." }
+            utm_source: { $ref: '#/components/schemas/UtmValue' }
+            utm_medium: { $ref: '#/components/schemas/UtmValue' }
+            utm_campaign: { $ref: '#/components/schemas/UtmValue' }
+            utm_term: { $ref: '#/components/schemas/UtmValue' }
+            utm_content: { $ref: '#/components/schemas/UtmValue' }
+            utm_id: { $ref: '#/components/schemas/UtmValue' }
+            gclid: { $ref: '#/components/schemas/ClickId' }
+            gbraid: { $ref: '#/components/schemas/ClickId' }
+            wbraid: { $ref: '#/components/schemas/ClickId' }
+            fbclid: { $ref: '#/components/schemas/ClickId' }
+            ttclid: { $ref: '#/components/schemas/ClickId' }
+            msclkid: { $ref: '#/components/schemas/ClickId' }
+            fbp: { type: [string, 'null'], maxLength: 500, pattern: "^fb\\.[0-9]\\.[0-9]{10,13}\\.[A-Za-z0-9._\\-]+$" }
+            fbc: { type: [string, 'null'], maxLength: 500, pattern: "^fb\\.[0-9]\\.[0-9]{10,13}\\.[A-Za-z0-9._\\-]+$" }
+            ga_client_id: { type: [string, 'null'], maxLength: 100, pattern: "^[0-9]+\\.[0-9]+$" }
+            landing_page_url: { $ref: '#/components/schemas/HttpUrl' }
+            referrer_url: { $ref: '#/components/schemas/HttpUrl' }
+
+    LeadSubmissionAccepted:
+      type: object
+      additionalProperties: false
+      required: [status, submission_id, event_id]
+      properties:
+        status: { type: string, const: received }
+        submission_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [field, code]
+      properties:
+        field: { type: string, maxLength: 64, description: "Caminho do campo (ex.: tracking.fbp)" }
+        code:
+          type: string
+          enum: [required, too_short, too_long, invalid_format, invalid_choice, not_allowed_characters, must_be_true, not_allowed]
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details. Nunca contém stack trace, SQL ou valor recebido.
+      additionalProperties: false
+      required: [type, title, status, code, correlation_id]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        code:
+          type: string
+          enum:
+            - invalid_json
+            - validation_failed
+            - idempotency_key_missing
+            - origin_not_allowed
+            - bot_verification_failed
+            - form_not_found
+            - not_found
+            - idempotency_in_progress
+            - payload_too_large
+            - unsupported_media_type
+            - idempotency_key_reused
+            - rate_limited
+            - unauthorized
+            - internal_error
+            - bot_verification_unavailable
+            - service_unavailable
+        correlation_id: { type: string, format: uuid }
+        errors:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/FieldError' }
+
+  responses:
+    BadRequest:
+      description: invalid_json | validation_failed | idempotency_key_missing
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthorized:
+      description: Credencial ausente ou inválida (mensagem genérica)
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Forbidden:
+      description: origin_not_allowed | bot_verification_failed
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    NotFound:
+      description: form_not_found
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Conflict:
+      description: idempotency_in_progress
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    PayloadTooLarge:
+      description: payload_too_large (> 16 KB)
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    UnsupportedMediaType:
+      description: unsupported_media_type
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unprocessable:
+      description: idempotency_key_reused
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    TooManyRequests:
+      description: rate_limited
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    InternalError:
+      description: internal_error
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ServiceUnavailable:
+      description: bot_verification_unavailable | service_unavailable
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

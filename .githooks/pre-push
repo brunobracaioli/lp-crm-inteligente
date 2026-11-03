@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Full local gate (same checks as CI) before anything leaves the machine.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/verify.sh" full

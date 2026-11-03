@@ -1,4 +1,13 @@
 .env
 .env.*
-node-modules
+node_modules/
 venv
+settings.local.json
+.env.local
+
+# Build e ferramentas
+dist/
+.vercel/
+coverage/
+supabase/.branches/
+supabase/.temp/

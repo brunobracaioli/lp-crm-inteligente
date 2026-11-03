@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fast gate on staged changes. Do not bypass with --no-verify; fix the finding instead.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/verify.sh" staged

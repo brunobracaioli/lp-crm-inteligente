@@ -1,0 +1,7 @@
+# Accepted risks for osv-scanner (CI job `dependencies`). Every entry has an owner-reviewed reason
+# and an expiry; when it expires the CI fails again and the entry must be re-evaluated.
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2027-01-31
+reason = "minimatch <11.0.1 (moderate ReDoS-style glob amplification) only via eslint (dev dependency); eslint 10.x still requires minimatch ^10. Patterns come from our own config, never from users. Revisit when eslint accepts minimatch >=11.0.1."

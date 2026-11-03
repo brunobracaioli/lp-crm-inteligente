@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Enforces Conventional Commits: <type>(<scope>)!: <description>, header <= 72 chars.
+set -euo pipefail
+
+MSG_FILE="$1"
+HEADER="$(grep -v '^#' "$MSG_FILE" | head -n 1)"
+MAX_HEADER_LENGTH=72
+TYPES='feat|fix|chore|refactor|test|docs|style|perf|build|ci|sec|revert'
+
+# Git-generated messages are allowed as-is.
+if [[ "$HEADER" =~ ^(Merge|Revert\ \"|fixup!|squash!|amend!) ]]; then
+  exit 0
+fi
+
+if [[ ! "$HEADER" =~ ^($TYPES)(\([a-z0-9._/-]+\))?!?:\ [^[:space:]].*$ ]]; then
+  cat >&2 <<MSG
+commit-msg: header is not a Conventional Commit:
+  "$HEADER"
+expected: <type>(<scope>): <description>   types: ${TYPES//|/, }
+example:  feat(lead-capture): validate whatsapp in E.164
+MSG
+  exit 1
+fi
+
+if (( ${#HEADER} > MAX_HEADER_LENGTH )); then
+  echo "commit-msg: header has ${#HEADER} chars (max $MAX_HEADER_LENGTH)." >&2
+  exit 1
+fi

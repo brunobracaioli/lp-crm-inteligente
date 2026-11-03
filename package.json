@@ -1,0 +1,23 @@
+{
+  "name": "lp-crm-inteligente",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "build": "pnpm -r --if-present run build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint:contract": "redocly lint contracts/openapi.v1.yaml",
+    "verify": "scripts/verify.sh full"
+  },
+  "devDependencies": {
+    "@redocly/cli": "2.71.2",
+    "prettier": "3.9.10"
+  }
+}
