@@ -4,11 +4,11 @@
 
 - 2026-11-03 — Spec-Driven Development do projeto escrito (specs, ADRs 0001–0006, contrato OpenAPI v1,
   threat model, plano de waves). Plano de ondas revisado para paralelismo (sub-ondas a/b).
-- 2026-11-03 — **Onda 0** implementada na branch `feat/wave-0-foundation`: gates locais verdes (lint, typecheck,
-  28 testes, build, redocly 0 erros, Semgrep, gitleaks). Falta o CI rodar no GitHub para fechar com ✅.
+- 2026-11-03 — **Onda 0** ✅ concluída (PR #1, branch `feat/wave-0-foundation`): gates locais e CI verdes (lint,
+  typecheck, 28 testes, build, redocly 0 erros, Semgrep, gitleaks, osv-scanner — run 41740888803).
   Decisões de toolchain em ADR-0007 (alias `#/`, TS 6, boundaries por lint). Contrato → `1.0.0-draft.2` (`not_found`).
   Risco aceito: minimatch (dev, moderate) em `osv-scanner.toml` até 2027-01-31.
-- Próximo passo: grupo paralelo **1 ∥ 2 ∥ 3** (+ 7a, 9a, 11a) após o merge da Onda 0.
+- Próximo passo: squash merge do PR #1 (aguarda aprovação do dono) → grupo paralelo **1 ∥ 2 ∥ 3** (+ 7a, 9a, 11a).
 - 2026-11-03 — Gates locais ativos (pre-commit/commit-msg/pre-push + guard de agentes), parte da Onda 0:
   `docs/how-to/local-quality-gates.md`. Subagent `.claude/agents/web-researcher.md` criado.
 - Credenciais sendo colocadas em `.env.local` pelo dono (template em `docs/reference/environment.md`).
@@ -18,7 +18,7 @@
 
 | Onda | Entrega | Status |
 |------|---------|--------|
-| 0 | Fundação (monorepo, platform kernel, CI de segurança, ports, env 0–5, deps 1–5) | 🟡 local verde, aguarda CI |
+| 0 | Fundação (monorepo, platform kernel, CI de segurança, ports, env 0–5, deps 1–5) | ✅ |
 | 1 | Banco: schemas, role `lp_api`, RLS, pgTAP | ⬜ |
 | 2 | Domínio + use case `SubmitLead` | ⬜ |
 | 3 | Adapters Turnstile / Upstash | ⬜ |

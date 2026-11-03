@@ -10,7 +10,7 @@
 
 | Onda | Entrega | Quem | Depende de | Paralela com | Status |
 |------|---------|------|------------|--------------|--------|
-| 0 | Fundação: monorepo, TS strict, Hono, platform kernel (inclui `crypto`), CI de segurança, ports congelados, env schema 0–5, deps 1–5 pré-instaladas | Claude (principal) | — | — | ⬜ |
+| 0 | Fundação: monorepo, TS strict, Hono, platform kernel (inclui `crypto`), CI de segurança, ports congelados, env schema 0–5, deps 1–5 pré-instaladas | Claude (principal) | — | — | ✅ |
 | 1 | Banco: schemas, tabelas, role `lp_api`, RLS, seed, pgTAP | subagent Sonnet | 0 | 2, 3, 7a, 9a, 11a | ⬜ |
 | 2 | Domínio + use case `SubmitLead` (VOs, agregado Lead, pipeline, score v1) com fakes | subagent Sonnet + revisão | 0 | 1, 3, 7a, 9a, 11a | ⬜ |
 | 3 | Adapters de borda: Turnstile, rate limit, idempotência (Upstash) | subagent Sonnet | 0 | 1, 2, 7a, 9a, 11a | ⬜ |
