@@ -1,0 +1,59 @@
+# Project SAST rules (CLAUDE.md "Regras inegociáveis"). Run: semgrep scan --config .semgrep/rules.yml --error
+rules:
+  - id: no-sql-unsafe
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: sql.unsafe is forbidden — use the driver's tagged templates (ADR-0003, lead-capture §4.4).
+    pattern: $SQL.unsafe(...)
+
+  - id: no-sql-string-building
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: SQL built by concatenation or an untagged template. Use sql`...${value}` (tagged template).
+    patterns:
+      - pattern-either:
+          - pattern: $SQL("..." + $X, ...)
+          - pattern: $SQL($X + "...", ...)
+          - pattern: '$SQL(`...${$X}...`, ...)'
+      - metavariable-regex:
+          metavariable: $SQL
+          regex: ^(sql|tx|db|trx|transaction|client)$
+
+  - id: no-console-in-production-code
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: console.* in production code — use the structured logger (platform/logger).
+    pattern-either:
+      - pattern: console.log(...)
+      - pattern: console.info(...)
+      - pattern: console.debug(...)
+      - pattern: console.trace(...)
+      - pattern: console.warn(...)
+      - pattern: console.error(...)
+    paths:
+      exclude:
+        ['**/*.test.ts', '**/*.spec.ts', '**/test/**', 'scripts/**', 'perf/**', '*.config.ts']
+
+  - id: no-dangerously-set-inner-html
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: dangerouslySetInnerHTML is forbidden (XSS). Render as text.
+    pattern-regex: dangerouslySetInnerHTML
+
+  - id: no-dynamic-code-execution
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: eval / new Function / string timers execute dynamic code and are forbidden.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+      - pattern: setTimeout("...", ...)
+      - pattern: setInterval("...", ...)
+
+  - id: no-dynamic-sql-in-migrations
+    languages: [generic]
+    severity: ERROR
+    message: Dynamic SQL (EXECUTE / format()) is forbidden in migrations.
+    pattern-regex: (?i)\b(EXECUTE\s+(format|'|\$|\|\|)|format\s*\()
+    paths:
+      include: [supabase/migrations/**, supabase/**/*.sql]

@@ -1,0 +1,9 @@
+pnpm-lock.yaml
+coverage/
+dist/
+.vercel/
+venv/
+docs/
+contracts/
+supabase/
+*.md
