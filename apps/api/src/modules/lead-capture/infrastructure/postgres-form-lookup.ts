@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Sql } from '#/platform/db/client.ts';
+import { translateDatabaseError } from '#/platform/db/unavailable.ts';
 import type { FormId, WorkspaceId } from '#/shared/ids.ts';
 import type { FormDefinition, FormLookup } from '#/modules/lead-capture/application/ports.ts';
 
@@ -24,17 +25,9 @@ const formRowSchema = z.strictObject({
 export function createPostgresFormLookup(sql: Sql): FormLookup {
   return {
     async findActiveByKey(formKey: string): Promise<FormDefinition | null> {
-      const rows = await sql<object[]>`
-        SELECT
-          id,
-          workspace_id,
-          form_key,
-          pg_catalog.to_jsonb(allowed_origins) AS allowed_origins,
-          turnstile_action,
-          privacy_policy_version
-        FROM core.forms
-        WHERE form_key = ${formKey} AND status = 'active'
-      `;
+      const rows = await lookup(sql, formKey).catch((error: unknown) => {
+        throw translateDatabaseError(error);
+      });
       const row = rows[0];
       if (row === undefined) {
         return null;
@@ -50,4 +43,18 @@ export function createPostgresFormLookup(sql: Sql): FormLookup {
       };
     },
   };
+}
+
+function lookup(sql: Sql, formKey: string): Promise<object[]> {
+  return sql<object[]>`
+    SELECT
+      id,
+      workspace_id,
+      form_key,
+      pg_catalog.to_jsonb(allowed_origins) AS allowed_origins,
+      turnstile_action,
+      privacy_policy_version
+    FROM core.forms
+    WHERE form_key = ${formKey} AND status = 'active'
+  `;
 }

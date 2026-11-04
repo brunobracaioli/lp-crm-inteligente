@@ -90,7 +90,7 @@ describe('PostgresUnitOfWork', () => {
     );
   });
 
-  it('applies the statement timeout to the transaction', async () => {
+  it('applies the statement timeout and reports it as a database outage (503)', async () => {
     const { workspaceId } = await scope.workspace();
     const uow = createPostgresUnitOfWork(db.app, { statementTimeoutMs: 100 });
 
@@ -98,10 +98,14 @@ describe('PostgresUnitOfWork', () => {
       uow.run(workspaceId, async (tx) => {
         await unwrapTransaction(tx)`SELECT pg_catalog.pg_sleep(2)`;
       }),
-    ).rejects.toMatchObject({ code: '57014' });
+    ).rejects.toMatchObject({
+      name: 'DependencyUnavailableError',
+      dependency: 'database',
+      cause: { code: '57014' },
+    });
   });
 
-  it('rejects when the database is unreachable', async () => {
+  it('reports an unreachable database as a dependency outage (503)', async () => {
     const unreachable = createSqlClient(
       { url: 'postgresql://lp_api:unused@127.0.0.1:1/postgres' },
       { connectTimeoutSeconds: 1 },
@@ -109,7 +113,9 @@ describe('PostgresUnitOfWork', () => {
     const uow = createPostgresUnitOfWork(unreachable);
 
     try {
-      await expect(uow.run(ids.uuidv7() as WorkspaceId, () => Promise.resolve())).rejects.toThrow();
+      await expect(
+        uow.run(ids.uuidv7() as WorkspaceId, () => Promise.resolve()),
+      ).rejects.toMatchObject({ name: 'DependencyUnavailableError', dependency: 'database' });
     } finally {
       await unreachable.end({ timeout: 1 });
     }
