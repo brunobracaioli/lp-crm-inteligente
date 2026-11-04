@@ -12,7 +12,7 @@
   worktrees), revisadas pela sessão principal e integradas localmente sem conflito: `verify.sh full` verde com as 6
   juntas (760 testes, build, redocly). Onda 1 verificada com Supabase CLI 2.120.0 (`test db`: 207 testes; FKs compostas
   por `workspace_id` adicionadas na revisão). Branches locais `feat/wave-{1-database,2-domain,3-edge-adapters,
-  5a-tracking,9a-crm-contract,11a-intelligence-prep}`, aguardando push/PR. Ordem de merge: 1 → 3 → 2 → 5a → 9a → 11a.
+  5a-tracking,9a-crm-contract,11a-intelligence-prep}` com CI verde nos PRs #3–#8. Ordem de merge: #3 → #4 → #5 → #6 → #7 → #8 → #9.
 - Pendências para a **Onda 4** (wiring), vindas das revisões:
   - idempotência: passar `inProgressTtlSeconds ≈ 60` (o default de 24 h bloqueia retentativas após crash);
   - `resolveClientIp(..., { trustVercelProxy: true })` no Vercel e decidir o tratamento de IP `null` (hoje bucket `unknown`);
@@ -37,11 +37,11 @@
 | Onda | Entrega | Status |
 |------|---------|--------|
 | 0 | Fundação (monorepo, platform kernel, CI de segurança, ports, env 0–5, deps 1–5) | ✅ |
-| 1 | Banco: schemas, role `lp_api`, RLS, pgTAP | 🟡 implementada, aguarda PR/CI |
-| 2 | Domínio + use case `SubmitLead` | 🟡 implementada, aguarda PR/CI |
-| 3 | Adapters Turnstile / Upstash | 🟡 implementada, aguarda PR/CI |
+| 1 | Banco: schemas, role `lp_api`, RLS, pgTAP | ✅ |
+| 2 | Domínio + use case `SubmitLead` | ✅ |
+| 3 | Adapters Turnstile / Upstash | ✅ |
 | 4 | Slice `POST /v1/leads` + preview | ⬜ |
-| 5a | Tracking isolado (domínio, CAPI client, assinatura QStash) | 🟡 implementada, aguarda PR/CI |
+| 5a | Tracking isolado (domínio, CAPI client, assinatura QStash) | ✅ |
 | 5b | Tracking wiring (outbox, rotas internas, sweeper) | ⬜ |
 | 6a | Hardening sem conflito (runbooks, k6, ZAP) | ⬜ |
 | 6b | Hardening & operação (retenção, `anonymize_lead`, Firewall, alertas) | ⬜ |
@@ -49,10 +49,10 @@
 | 7b | LP integrada ao preview (Codex) | ⬜ |
 | 8a | Container GTM sem publicar | ⬜ |
 | 8b | Publicação GTM + QA headless | ⬜ |
-| 9a | Contrato `/v1/crm/*` + threat model staff | 🟡 implementada, aguarda PR/CI |
+| 9a | Contrato `/v1/crm/*` + threat model staff | ✅ |
 | 9b | CRM API | ⬜ |
 | 10 | CRM web (Codex) | ⬜ |
-| 11a | Preparação IA (eval set, threat model LLM) | 🟡 implementada, aguarda PR/CI |
+| 11a | Preparação IA (eval set, threat model LLM) | ✅ |
 | 11b | Inteligência (IA, automações, offline conversions) | ⬜ |
 
 Caminho crítico: 0 → {1, 2, 3} → 4 → 5b → 6b → 9b → 11b. Gates sequenciais e regras de paralelismo em

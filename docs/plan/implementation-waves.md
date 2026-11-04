@@ -11,11 +11,11 @@
 | Onda | Entrega | Quem | Depende de | Paralela com | Status |
 |------|---------|------|------------|--------------|--------|
 | 0 | Fundação: monorepo, TS strict, Hono, platform kernel (inclui `crypto`), CI de segurança, ports congelados, env schema 0–5, deps 1–5 pré-instaladas | Claude (principal) | — | — | ✅ |
-| 1 | Banco: schemas, tabelas, role `lp_api`, RLS, seed, pgTAP | subagent Sonnet | 0 | 2, 3, 7a, 9a, 11a | 🟡 implementada, aguarda PR/CI |
-| 2 | Domínio + use case `SubmitLead` (VOs, agregado Lead, pipeline, score v1) com fakes | subagent Sonnet + revisão | 0 | 1, 3, 7a, 9a, 11a | 🟡 implementada, aguarda PR/CI |
-| 3 | Adapters de borda: Turnstile, rate limit, idempotência (Upstash) | subagent Sonnet | 0 | 1, 2, 7a, 9a, 11a | 🟡 implementada, aguarda PR/CI |
+| 1 | Banco: schemas, tabelas, role `lp_api`, RLS, seed, pgTAP | subagent Sonnet | 0 | 2, 3, 7a, 9a, 11a | ✅ |
+| 2 | Domínio + use case `SubmitLead` (VOs, agregado Lead, pipeline, score v1) com fakes | subagent Sonnet + revisão | 0 | 1, 3, 7a, 9a, 11a | ✅ |
+| 3 | Adapters de borda: Turnstile, rate limit, idempotência (Upstash) | subagent Sonnet | 0 | 1, 2, 7a, 9a, 11a | ✅ |
 | 4 | Slice `POST /v1/leads` ponta a ponta + deploy preview | Claude (principal) | 1, 2, 3 | 5a, 7a | ⬜ |
-| 5a | Tracking isolado: domínio (consentimento, hashing com vetores Meta), `meta-capi-client`, `qstash-signature`, `qstash-publisher` — só unit/MSW | subagent Sonnet | 0 | 4, 7a | 🟡 implementada, aguarda PR/CI |
+| 5a | Tracking isolado: domínio (consentimento, hashing com vetores Meta), `meta-capi-client`, `qstash-signature`, `qstash-publisher` — só unit/MSW | subagent Sonnet | 0 | 4, 7a | ✅ |
 | 5b | Tracking wiring: rotas `/internal/v1/outbox/*`, `DispatchOutboxEvent`/`SweepOutbox` com Postgres, publish pós-commit, schedule IaC | Claude (principal) | 4, 5a | 6a, 7b, 8a | ⬜ |
 | 6a | Hardening sem conflito: runbooks, roteiro k6, config ZAP, revisão do threat model | subagent Sonnet | 4 | 5b, 7b, 8a | ⬜ |
 | 6b | Hardening com conflito: migration de retenção + `crm.anonymize_lead`, Firewall como código, alertas, execução k6/ZAP | Claude (principal) | 5b, 6a | 7b, 8a | ⬜ |
@@ -23,10 +23,10 @@
 | 7b | LP integrada ao preview da API | Codex | 4, 7a | 5b, 6, 8a | ⬜ |
 | 8a | Container GTM montado em workspace (sem publicar) a partir do contrato do dataLayer | Codex + Claude | 0 | 5b, 6, 7b | ⬜ |
 | 8b | Publicação GTM + QA headless (dedup Pixel×CAPI) | Codex + Claude (publicar exige humano) | 5b, 7b, 8a | 9b | ⬜ |
-| 9a | Contrato `/v1/crm/*` no OpenAPI + threat model staff auth | subagent Sonnet + revisão | 0 | 1–8 | 🟡 implementada, aguarda PR/CI |
+| 9a | Contrato `/v1/crm/*` no OpenAPI + threat model staff auth | subagent Sonnet + revisão | 0 | 1–8 | ✅ |
 | 9b | CRM API: staff auth, membros, pipeline, notas, export, LGPD do titular | Claude (principal) | 6b, 9a | 8b | ⬜ |
 | 10 | CRM web (UI do pipeline e do lead) — começa contra mock da 9a | Codex | 9a (mock) · 9b (integração) | 11b | ⬜ |
-| 11a | Preparação IA: eval set (≥ 30 leads sintéticos rotulados) + threat model OWASP LLM/Agentic | subagent Sonnet | 0 | 1–9 | 🟡 implementada, aguarda PR/CI |
+| 11a | Preparação IA: eval set (≥ 30 leads sintéticos rotulados) + threat model OWASP LLM/Agentic | subagent Sonnet | 0 | 1–9 | ✅ |
 | 11b | Inteligência: qualificação por IA, automações (SLA, round-robin), offline conversions | Claude (principal) | 9b, 11a | 10 | ⬜ |
 
 **Caminho crítico**: 0 → {1, 2, 3} → 4 → 5b → 6b → 9b → 11b. Todo o resto roda em volta dele.
