@@ -79,7 +79,7 @@ describe('LoggingTrackingTelemetry', () => {
   });
 
   it('logs a dead-lettered event at error with an alert key and the reason', () => {
-    const { telemetry, logged } = build();
+    const { telemetry, logged, metrics } = build();
 
     telemetry.outboxDead({
       outboxEventId: OUTBOX_EVENT_ID,
@@ -93,6 +93,10 @@ describe('LoggingTrackingTelemetry', () => {
       reason: 'attempts_exhausted',
       correlation_id: CORRELATION_ID,
     });
+    // Feeds the lp-outbox-dead monitor (ops/vercel/monitors.json).
+    expect(metrics.records).toEqual([
+      { name: 'outbox.dead', value: 1, attributes: { reason: 'attempts_exhausted' } },
+    ]);
   });
 
   it('logs anomalies at warn with IDs and a code only', () => {

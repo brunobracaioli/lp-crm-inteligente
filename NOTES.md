@@ -64,13 +64,13 @@
 | 5a | Tracking isolado (domínio, CAPI client, assinatura QStash) | ✅ |
 | 5b | Tracking wiring (outbox, rotas internas, sweeper) | 🟡 código pronto; falta preview |
 | 6a | Hardening sem conflito (runbooks, k6, ZAP) | ✅ |
-| 6b | Hardening & operação (retenção, `anonymize_lead`, Firewall, alertas) | ⬜ |
+| 6b | Hardening & operação (retenção, `anonymize_lead`, Firewall, alertas) | 🟡 Firewall e alertas como código prontos (`feat/wave-6b-ops`); migration de retenção em andamento; k6/ZAP dependem do preview |
 | 7a | LP contra mock (Codex) | ⬜ |
 | 7b | LP integrada ao preview (Codex) | ⬜ |
 | 8a | Container GTM sem publicar | ⬜ |
 | 8b | Publicação GTM + QA headless | ⬜ |
 | 9a | Contrato `/v1/crm/*` + threat model staff | ✅ |
-| 9b | CRM API | ⬜ |
+| 9b | CRM API | 🟡 em andamento (auth do staff, rotas de leitura, escrita e LGPD em paralelo) |
 | 10 | CRM web (Codex) | ⬜ |
 | 11a | Preparação IA (eval set, threat model LLM) | ✅ |
 | 11b | Inteligência (IA, automações, offline conversions) | ⬜ |

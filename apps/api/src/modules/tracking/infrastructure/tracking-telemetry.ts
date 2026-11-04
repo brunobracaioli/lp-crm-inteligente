@@ -51,6 +51,8 @@ export class LoggingTrackingTelemetry implements TrackingTelemetry {
   }
 
   outboxDead(event: Parameters<TrackingTelemetry['outboxDead']>[0]): void {
+    // Metric for the `lp-outbox-dead` monitor (ops/vercel/monitors.json); the log keeps the IDs.
+    this.#metrics.record('outbox.dead', COUNT, { reason: event.reason });
     this.#logger.error(
       {
         correlation_id: event.correlationId,

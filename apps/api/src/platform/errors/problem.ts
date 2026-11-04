@@ -19,7 +19,14 @@ export type ProblemCode =
   | 'unauthorized'
   | 'internal_error'
   | 'bot_verification_unavailable'
-  | 'service_unavailable';
+  | 'service_unavailable'
+  | 'forbidden'
+  | 'mfa_required'
+  | 'reauthentication_required'
+  | 'version_conflict'
+  | 'plan_stale'
+  | 'lead_anonymized'
+  | 'invalid_stage_transition';
 
 export type FieldErrorCode =
   | 'required'
@@ -53,6 +60,13 @@ const TITLES: Readonly<Record<ProblemCode, string>> = {
   internal_error: 'Internal error',
   bot_verification_unavailable: 'Bot verification unavailable',
   service_unavailable: 'Service unavailable',
+  forbidden: 'Forbidden',
+  mfa_required: 'Multi-factor authentication required',
+  reauthentication_required: 'Reauthentication required',
+  version_conflict: 'Version conflict',
+  plan_stale: 'Plan is stale',
+  lead_anonymized: 'Lead anonymized',
+  invalid_stage_transition: 'Invalid stage transition',
 };
 
 /** Max field errors returned (contract: Problem.errors maxItems). */
