@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LP + CRM Inteligente API
-  version: 1.0.0-draft.3
+  version: 1.0.0-draft.4
   description: |
     Contrato API-first do backend (Vercel). Fonte da verdade para o front (LP e CRM web — Codex) e para os testes.
     Specs: docs/specs/lead-capture.md, docs/specs/tracking.md, docs/specs/crm.md.
@@ -21,6 +21,11 @@ info:
     - `x-audit-action`: ação gravada em `core.audit_log` (sucesso e negação), sem PII.
 
     Changelog:
+    - 1.0.0-draft.4 (2026-11-04, Onda 4): `Retry-After` passa a ser obrigatório (`RetryAfterRequired`) nas respostas
+      `Conflict` (409 `idempotency_in_progress`), `TooManyRequests` (429 `rate_limited`) e `ServiceUnavailable`
+      (503), como a implementação de `POST /v1/leads` já emite. Compatibilidade: só reforça uma garantia ao cliente;
+      nenhum schema, operação ou código HTTP muda. `StaffConflict` mantém o header opcional (só
+      `idempotency_in_progress` o envia).
     - 1.0.0-draft.3 (2026-11-03, Onda 9a): adiciona as rotas `/v1/crm/*` (sessão, listagem/busca/detalhe de leads,
       mudança de estágio e de dono, notas, export CSV e direitos do titular — LGPD), o scheme `staffBearer`
       detalhado, a tag `crm-*`, parâmetros/headers/schemas/respostas do CRM e sete valores novos em `Problem.code`
@@ -824,6 +829,10 @@ components:
     RetryAfter:
       description: Segundos até poder tentar novamente.
       schema: { type: integer, minimum: 1 }
+    RetryAfterRequired:
+      description: Segundos até poder tentar novamente (sempre presente nesta resposta).
+      required: true
+      schema: { type: integer, minimum: 1 }
     WWWAuthenticate:
       description: Desafio de autenticação (RFC 6750) sem detalhes do motivo da falha.
       schema: { type: string, const: Bearer }
@@ -1592,7 +1601,7 @@ components:
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     Conflict:
       description: idempotency_in_progress
-      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfterRequired' } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     PayloadTooLarge:
       description: payload_too_large (> 16 KB)
@@ -1605,14 +1614,14 @@ components:
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     TooManyRequests:
       description: rate_limited
-      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfterRequired' } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     InternalError:
       description: internal_error
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ServiceUnavailable:
       description: bot_verification_unavailable | service_unavailable
-      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfterRequired' } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
 
     # CRM (Onda 9a) — respostas de erro do staff. Corpo sempre `Problem` (sem eco de valores recebidos).

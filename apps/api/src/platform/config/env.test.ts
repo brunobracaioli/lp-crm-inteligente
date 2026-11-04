@@ -81,6 +81,23 @@ describe('loadConfig', () => {
     expect(error.message).toContain('UPSTASH_REDIS_REST_TOKEN');
   });
 
+  it('requires the lead-capture variables outside development, naming each one', () => {
+    // act
+    const error = captureConfigError({
+      ...BASE,
+      APP_ENV: 'preview',
+      CORS_ALLOWED_ORIGINS: 'https://lp.example.com.br',
+    });
+    // assert
+    expect(error.issues).toEqual([
+      'DATABASE_URL: required in preview',
+      'UPSTASH_REDIS_REST_URL: required in preview',
+      'UPSTASH_REDIS_REST_TOKEN: required in preview',
+      'TURNSTILE_SECRET_KEY: required in preview',
+      'HASH_PEPPER: required in preview',
+    ]);
+  });
+
   it('forbids META_TEST_EVENT_CODE in production', () => {
     const error = captureConfigError({
       APP_ENV: 'production',

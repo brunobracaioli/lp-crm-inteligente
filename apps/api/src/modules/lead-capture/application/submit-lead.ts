@@ -99,9 +99,21 @@ class DuplicateSubmissionRollback extends Error {
   }
 }
 
-/** `existing` stays `undefined` unless the insert hit the UNIQUE (workspace_id, idempotency_key). */
+/** Rollback signal for a hit on UNIQUE (workspace_id, event_id); see `DuplicateProbe`. */
+class EventIdCollisionRollback extends Error {
+  constructor() {
+    super('submission with the same event id already exists');
+    this.name = 'EventIdCollisionRollback';
+  }
+}
+
+/**
+ * `existing` stays `undefined` unless the insert hit the UNIQUE (workspace_id, idempotency_key);
+ * `eventIdCollision` turns true when it hit the UNIQUE (workspace_id, event_id) instead.
+ */
 interface DuplicateProbe {
   existing: StoredSubmissionReference | null | undefined;
+  eventIdCollision: boolean;
 }
 
 const refuse = (failure: SubmitLeadFailure): SubmitLeadResult => err(failure);
@@ -211,6 +223,10 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
           command.idempotencyKey,
         );
         throw new DuplicateSubmissionRollback();
+      }
+      if (inserted === 'duplicate_event_id') {
+        duplicate.eventIdCollision = true;
+        throw new EventIdCollisionRollback();
       }
 
       const consent = (purpose: ConsentRecord['purpose'], granted: boolean): ConsentRecord => ({
@@ -375,7 +391,7 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
     // 'unavailable' (Redis down): carry on, the database UNIQUE is the second barrier.
     const ownsClaim = claim.status === 'claimed';
 
-    const duplicate: DuplicateProbe = { existing: undefined };
+    const duplicate: DuplicateProbe = { existing: undefined, eventIdCollision: false };
     try {
       // Step 10 — rate limit by e-mail, after the replay check so retries do not count.
       const emailRefusal = rateLimited('email', await deps.rateLimiter.checkEmail(snapshot.email));
@@ -387,19 +403,22 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
       }
 
       // Steps 11–12 — one transaction, then the idempotent response and the post-commit publish.
-      const { accepted, outboxEventId } = await persist(
-        command,
-        form,
-        snapshot,
-        requestHash,
-        {
-          provider: 'turnstile',
-          challengeAgeSeconds: verification.challengeAgeSeconds,
-          ephemeralId: verification.ephemeralId,
-        },
-        eventId,
-        duplicate,
-      );
+      const antibot: SubmissionRecord['antibot'] = {
+        provider: 'turnstile',
+        challengeAgeSeconds: verification.challengeAgeSeconds,
+        ephemeralId: verification.ephemeralId,
+      };
+      const persistWith = (id: EventId) =>
+        persist(command, form, snapshot, requestHash, antibot, id, duplicate);
+      const { accepted, outboxEventId } = await persistWith(eventId).catch((error: unknown) => {
+        if (!duplicate.eventIdCollision) {
+          throw error;
+        }
+        // The client reused an event_id under a new key: accept the lead with a fresh server id
+        // (Pixel×CAPI dedup is lost for this one event, a duplicate conversion is worse). Once only.
+        duplicate.eventIdCollision = false;
+        return persistWith(deps.ids.uuidv7() as EventId);
+      });
       if (ownsClaim) {
         await completeQuietly(form.workspaceId, command.idempotencyKey, requestHash, accepted);
       }
