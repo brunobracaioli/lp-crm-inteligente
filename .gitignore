@@ -11,3 +11,6 @@ dist/
 coverage/
 supabase/.branches/
 supabase/.temp/
+
+# Claude Code agent worktrees (local only)
+.claude/worktrees/
