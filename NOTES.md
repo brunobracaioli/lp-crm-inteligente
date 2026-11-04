@@ -13,13 +13,17 @@
   juntas (760 testes, build, redocly). Onda 1 verificada com Supabase CLI 2.120.0 (`test db`: 207 testes; FKs compostas
   por `workspace_id` adicionadas na revisão). Branches locais `feat/wave-{1-database,2-domain,3-edge-adapters,
   5a-tracking,9a-crm-contract,11a-intelligence-prep}` com CI verde nos PRs #3–#8. Ordem de merge: #3 → #4 → #5 → #6 → #7 → #8 → #9.
-- Pendências para a **Onda 4** (wiring), vindas das revisões:
-  - idempotência: passar `inProgressTtlSeconds ≈ 60` (o default de 24 h bloqueia retentativas após crash);
-  - `resolveClientIp(..., { trustVercelProxy: true })` no Vercel e decidir o tratamento de IP `null` (hoje bucket `unknown`);
-  - `SubmissionRepository.insert` sem `duplicate_event_id` → colisão de `event_id` vira 500 (propor ajuste no port);
-  - `#test/*` em `imports` do `apps/api/package.json` para `test/integration/` alcançar `test/fakes/`;
-  - cliente Redis com poucas retentativas (adapters já têm timeout de 1 s); métrica `idempotency.unavailable` proposta;
-  - 7 códigos novos do contrato draft.3 em `platform/errors/problem.ts` (9b); CORS separado para o CRM web (9b).
+- 2026-11-04 — **Onda 4** 🟡 código pronto na branch `feat/wave-4-lead-slice` (base local com as ondas 1–3/5a/9a/11a;
+  rebase sobre a `main` depois do merge dos PRs #3–#9). Implementada em paralelo (subagents Sonnet high: Postgres e
+  HTTP) + composition root na sessão principal. `verify.sh full` verde (880 testes) e `test:integration` 47/47 num
+  Postgres 18 local descartável (sem Docker no WSL; falta rodar uma vez no `supabase start`, PG17).
+  Pendências da revisão resolvidas: colisão de `event_id` (retry único com id do servidor), `#test/*`, TTL
+  `in_progress` de 60 s, `trustVercelProxy` fora de development (IP `null` → bucket `unknown`), Redis com 1 retry,
+  queda do banco → `503 service_unavailable` + `Retry-After`. Contrato → `1.0.0-draft.4` (`Retry-After` obrigatório).
+  Falta para ✅: deploy de preview + env vars de preview na Vercel (ação externa, exige confirmação do dono) e `curl`
+  com chave Turnstile de teste retornando `202`. O outbox fica `pending` até a 5b.
+- Pendências que continuam para a **9b**: 7 códigos novos do draft.3 em `platform/errors/problem.ts`; CORS separado
+  para o CRM web.
 - Pendências para **5b / 6b**: `gaClientId` no port de tracking e flag `GA4_MP_ENABLED`; sweeper recebe o
   `workspace_id` (o `lp_api` não enumera workspaces); expurgo de 12 meses do `core.audit_log` conflita com o trigger
   append-only (ADR na 6b); `crm.anonymize_lead` deve cobrir notas, `first_touch`/`last_touch` e `crm.lead_insights`.
@@ -40,7 +44,7 @@
 | 1 | Banco: schemas, role `lp_api`, RLS, pgTAP | ✅ |
 | 2 | Domínio + use case `SubmitLead` | ✅ |
 | 3 | Adapters Turnstile / Upstash | ✅ |
-| 4 | Slice `POST /v1/leads` + preview | ⬜ |
+| 4 | Slice `POST /v1/leads` + preview | 🟡 código pronto; falta preview |
 | 5a | Tracking isolado (domínio, CAPI client, assinatura QStash) | ✅ |
 | 5b | Tracking wiring (outbox, rotas internas, sweeper) | ⬜ |
 | 6a | Hardening sem conflito (runbooks, k6, ZAP) | ⬜ |
