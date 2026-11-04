@@ -91,7 +91,7 @@ export async function seedSubmission(
   const leadId = randomUUID() as LeadId;
   const submissionId = randomUUID() as SubmissionId;
   const eventId = randomUUID();
-  const consent = JSON.stringify(options.consent ?? GRANTED_CONSENT);
+  const consent = admin.json({ ...(options.consent ?? GRANTED_CONSENT) });
   await admin`
     INSERT INTO crm.leads (
       id, workspace_id, first_name, last_name, email, whatsapp_e164, company_name, area_of_expertise,
@@ -110,7 +110,7 @@ export async function seedSubmission(
       ${submissionId}, ${workspace.workspaceId}, ${workspace.formId}, ${leadId}, ${randomUUID()},
       ${'a'.repeat(64)}, ${eventId}, '{}'::jsonb, ${options.utmSource === undefined ? 'meta' : options.utmSource},
       'fb.1.1730635200000.1116446470', NULL, 'IwAR0TestClickId',
-      'https://lp.example.test/oferta?utm_source=meta', ${consent}::jsonb,
+      'https://lp.example.test/oferta?utm_source=meta', ${consent},
       ${options.purgedPii === true ? null : '203.0.113.7'},
       ${options.purgedPii === true ? null : 'TestAgent/1.0'},
       ${'b'.repeat(64)}, '{"provider":"turnstile","challenge_age_s":4}'::jsonb,
@@ -141,7 +141,7 @@ export async function seedOutboxEvent(
       next_attempt_at, locked_until, created_at)
     VALUES (
       ${id}, ${workspace.workspaceId}, 'lead', ${submission.leadId}, 'lead.captured',
-      ${JSON.stringify({ lead_id: submission.leadId, submission_id: submission.submissionId })}::jsonb,
+      ${admin.json({ lead_id: submission.leadId, submission_id: submission.submissionId })},
       ${options.status ?? 'pending'}, ${options.attempts ?? 0},
       ${options.nextAttemptAt ?? createdAt}, ${options.lockedUntil ?? null}, ${createdAt})
   `;
