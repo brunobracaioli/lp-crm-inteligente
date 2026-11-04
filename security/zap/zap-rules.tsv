@@ -1,0 +1,37 @@
+# OWASP ZAP rule configuration for the LP + CRM API (docs: https://www.zaproxy.org/docs/docker/api-scan/).
+# Format: <rule id> TAB <WARN|IGNORE|FAIL> TAB (<rule name>) [TAB <comment>]. Rules not listed stay WARN.
+# The run is PASSIVE ONLY (see security/zap/README.md); the Medium/High gate lives in check-report.mjs.
+#
+# Policy: IGNORE only a proven false positive for a JSON-only API, each with its justification below.
+# FAIL marks regression guards for baseline headers/behaviours that 000-overview §5.1 makes mandatory:
+# if one of these ever shows up, the pipeline must go red regardless of the alert's risk level.
+
+# --- Regression guards (FAIL): mandatory response headers (000-overview §5.1, AC-LC-16) ----------
+10020	FAIL	(Anti-clickjacking Header)	X-Frame-Options: DENY and CSP frame-ancestors are set on every response
+10021	FAIL	(X-Content-Type-Options Header Missing)	nosniff is set on every response, including errors and preflight
+10035	FAIL	(Strict-Transport-Security Header)	HSTS is set on every response; only meaningful when the target is https
+10038	FAIL	(Content Security Policy (CSP) Header Not Set)	CSP default-src 'none' is set on every response
+10063	FAIL	(Permissions Policy Header Not Set)	Permissions-Policy is set on every response
+
+# --- Regression guards (FAIL): the API must never leak internals or set cookies -----------------
+10036	FAIL	(HTTP Server Response Header)	no version in Server; Vercel sends a bare product token
+10037	FAIL	(Server Leaks Information via X-Powered-By)	Hono/Vercel send no X-Powered-By
+10010	FAIL	(Cookie No HttpOnly Flag)	the API is stateless and never sets cookies; any cookie is a regression
+10011	FAIL	(Cookie Without Secure Flag)	idem
+10054	FAIL	(Cookie without SameSite Attribute)	idem
+90022	FAIL	(Application Error Disclosure)	errors are RFC 9457 problem+json with no stack/driver text (AC-LC-18)
+10023	FAIL	(Information Disclosure - Debug Error Messages)	idem
+10024	FAIL	(Information Disclosure - Sensitive Information in URL)	no token or PII in query strings
+10098	FAIL	(Cross-Domain Misconfiguration)	CORS is an explicit allowlist, never *
+
+# --- Known false positives for a JSON-only API (IGNORE, justified) ------------------------------
+90005	IGNORE	(Fetch Metadata Request Headers)	Informational: reports missing Sec-Fetch-* REQUEST headers, which a browser sends and ZAP's HTTP client does not. Not a property of the API.
+10109	IGNORE	(Modern Web Application)	Informational heuristic for HTML single-page apps; this origin serves only JSON (no HTML, no scripts).
+
+# --- Triage candidates for the first Onda 6b run (left at WARN on purpose) -----------------------
+# 10055 (CSP) may report directives without fallback on our minimal CSP; decide in 6b whether it is a real
+#       finding for a non-HTML API or a false positive worth an IGNORE with the evidence attached.
+# 10062 (PII Disclosure, High) is pattern based (card-like digit runs); a UUID in a 202 body can match by
+#       chance. Only IGNORE it in 6b with the offending response attached as evidence.
+# 90004 (Spectre site isolation, Low): CORP same-site is set; COOP/COEP are irrelevant to JSON responses.
+# 10049 (Content Cacheability): Cache-Control: no-store is set; "Non-Storable Content" is Informational.
