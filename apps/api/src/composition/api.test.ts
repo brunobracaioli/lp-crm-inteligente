@@ -25,6 +25,8 @@ const TRACKING_ENV = {
   DEFAULT_WORKSPACE_ID: '01920000-0000-7000-8000-000000000001',
 } as const;
 
+const CRM_ENV = { SUPABASE_URL: 'https://project.supabase.invalid' } as const;
+
 function mountedRoutes(env: Record<string, string>): string[] {
   const groups = composeApiRoutes({
     config: loadConfig(env),
@@ -58,6 +60,27 @@ describe('composeApiRoutes', () => {
         'POST /v1/leads',
         'POST /internal/v1/outbox/dispatch',
         'POST /internal/v1/outbox/sweep',
+      ]),
+    );
+  });
+
+  it('mounts no CRM route unless the identity provider is configured (fail closed)', () => {
+    // act
+    const routes = mountedRoutes({ ...DEV_ENV, ...LEAD_CAPTURE_ENV, ...TRACKING_ENV });
+    // assert
+    expect(routes.some((route) => route.includes('/v1/crm/'))).toBe(false);
+  });
+
+  it('mounts the CRM staff and read routes when the identity provider is configured', () => {
+    // act
+    const routes = mountedRoutes({ ...DEV_ENV, ...LEAD_CAPTURE_ENV, ...CRM_ENV });
+    // assert
+    expect(routes).toEqual(
+      expect.arrayContaining([
+        'GET /v1/crm/me',
+        'GET /v1/crm/members',
+        'GET /v1/crm/leads',
+        'POST /v1/crm/leads/search',
       ]),
     );
   });
