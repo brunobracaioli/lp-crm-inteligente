@@ -1,0 +1,96 @@
+# Supabase CLI v2 configuration (local stack: `supabase start`). Spec: docs/specs/database.md.
+# This file only drives the LOCAL stack and `supabase config push`; the hosted project must carry the
+# same security settings (jwt_expiry, signup off, exposed schemas) - see docs/reference/database-schema.md.
+project_id = "lp-crm-inteligente"
+
+[api]
+enabled = true
+# Non-default ports (547xx) so this stack can run next to other projects' stacks on the default 543xx.
+port = 54721
+# The Data API exposes ONLY `public`, which stays empty (database.md section 1, AC-DB-10).
+# core/crm/capture/tracking are private schemas reached by the API through the `lp_api` role (ADR-0003).
+schemas = ["public"]
+extra_search_path = ["public"]
+max_rows = 1000
+
+[api.tls]
+enabled = false
+
+[db]
+port = 54722
+shadow_port = 54720
+health_timeout = "2m"
+# Must match the hosted project (Supabase Postgres 17).
+major_version = 17
+
+[db.pooler]
+# Production uses Supavisor (transaction mode); locally the API talks to the database port directly.
+enabled = false
+port = 54729
+pool_mode = "transaction"
+default_pool_size = 20
+max_client_conn = 100
+
+[db.migrations]
+enabled = true
+
+[db.seed]
+# seed.sql runs only on `supabase db reset` (local). It is never applied to a hosted project.
+enabled = true
+sql_paths = ["./seed.sql"]
+
+# Services this project does not use are off: smaller attack surface and a lighter local stack.
+[realtime]
+enabled = false
+
+[studio]
+enabled = false
+port = 54723
+api_url = "http://127.0.0.1"
+
+[local_smtp]
+enabled = false
+port = 54724
+
+[storage]
+enabled = false
+
+[edge_runtime]
+enabled = false
+
+[analytics]
+enabled = false
+port = 54727
+backend = "postgres"
+
+# Supabase Auth: staff login for the CRM (wave 9). Access tokens live 15 minutes (crm.md section 7).
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = []
+jwt_expiry = 900
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+# Staff are invited by an admin; there is no public sign-up.
+enable_signup = false
+enable_anonymous_sign_ins = false
+enable_manual_linking = false
+minimum_password_length = 12
+password_requirements = "lower_upper_letters_digits_symbols"
+
+[auth.email]
+enable_signup = false
+double_confirm_changes = true
+enable_confirmations = true
+secure_password_change = true
+max_frequency = "60s"
+otp_length = 6
+otp_expiry = 3600
+
+# MFA (TOTP) is mandatory for admins (crm.md section 7, AAL2).
+[auth.mfa]
+max_enrolled_factors = 10
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
