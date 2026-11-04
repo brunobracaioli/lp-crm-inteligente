@@ -1,10 +1,8 @@
 import { Writable } from 'node:stream';
-import type { Hono } from 'hono';
 import { createApp } from '#/app.ts';
 import type { StaffGuards, StaffPrincipal, StaffRole } from '#/platform/auth/staff.ts';
 import { loadConfig } from '#/platform/config/env.ts';
 import { HttpProblem } from '#/platform/errors/problem.ts';
-import type { AppEnv } from '#/platform/http/app-env.ts';
 import { createLogger } from '#/platform/logger/logger.ts';
 import type { LeadQueries } from '#/modules/crm/application/queries/ports.ts';
 import type { UnitOfWork } from '#/shared/unit-of-work.ts';
@@ -99,8 +97,7 @@ export function buildReadAppOn<Queries extends LeadQueries, Uow extends UnitOfWo
   const app = createApp({
     config: loadConfig({ APP_ENV: 'development', CORS_ALLOWED_ORIGINS: 'https://crm.example.com' }),
     logger: createLogger({ level: 'debug', appEnv: 'test', destination: logDestination }),
-    // The staff routes extend AppEnv with the principal; the root mounts them like any other group.
-    routes: [routes as unknown as Hono<AppEnv>],
+    routes: [routes],
   });
 
   const get = (path: string): Promise<Response> =>
