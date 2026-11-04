@@ -1,0 +1,6 @@
+# Local-only stand-in for the Supabase pg_cron extension (docs/how-to/run-integration-tests.md).
+# Mirrors the real control file so `CREATE EXTENSION pg_cron WITH SCHEMA pg_catalog` behaves the same.
+comment = 'LOCAL TEST STUB of pg_cron: records schedules in cron.job, never runs them'
+default_version = '1.6'
+relocatable = false
+schema = pg_catalog
