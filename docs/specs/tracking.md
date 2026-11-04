@@ -102,6 +102,28 @@ Regras:
 - Wave 11: *enhanced conversions for leads* / upload de conversão offline via Google Ads API
   com `gclid` e e-mail SHA-256 ao atingir `qualified` e `won`.
 
+### 5.5 Semântica do despacho (wave 5b)
+
+- **Três transações curtas, nunca uma aberta durante a chamada externa** (`lp_api` tem
+  `idle_in_transaction_session_timeout = 5s`): (1) *claim* — `SELECT … FOR UPDATE SKIP LOCKED`, lease
+  em `locked_until` (60 s), `attempts + 1`, cria deliveries faltantes e lê a fonte da conversão;
+  (2) uma por entrega — gate de consentimento → destino → grava o resultado; (3) fecha o evento.
+- **Estado do evento**: todas as entregas terminais → `done` (ou `dead` se alguma entrega ficou `dead`,
+  para alimentar o alerta); alguma `failed` → volta a `pending` com `next_attempt_at` = backoff
+  exponencial com jitter (30 s … 15 min) e resposta `500`. Lease vigente de outro worker → `500`
+  (QStash retenta); evento `done`/`dead` → `200` sem reenviar; evento inexistente no workspace → `200`
+  + log `warn` (`event_not_found`).
+- **Tenant**: o corpo do QStash só traz `outbox_event_id` e o `lp_api` está sob RLS, então o workspace
+  vem de configuração do servidor (v1 = um workspace, ADR-0006), nunca do request.
+- **Sweeper**: republica `pending` com `next_attempt_at <= now` e `created_at < now − 2 min`, e
+  `processing` com lease expirado; lote de 50, mais antigos primeiro, `FOR UPDATE SKIP LOCKED`. Cada
+  republicação conta como tentativa (`recordRepublish`); evento com 8 tentativas vira `dead` + log
+  `error` (`alert: outbox_event_dead`) em vez de ser republicado. A publicação ocorre após o commit.
+- **Entregas**: destino desabilitado com entrega aberta → `skipped_disabled`; lead inexistente ou
+  anonimizado, ou identidade não normalizável → `dead` (`lead_source_unavailable` /
+  `conversion_invalid_*`), sem chamada externa. Um crash entre o envio e a gravação reenvia no retry:
+  a Meta deduplica pelo `event_id`.
+
 ## 6. Endpoints internos
 
 | Rota | Auth | Corpo |
