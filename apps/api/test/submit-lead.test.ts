@@ -862,6 +862,40 @@ describe('SubmitLead: idempotency (R7)', () => {
     expect(h.leads.all()[0]?.submissionsCount).toBe(1);
   });
 
+  it('a client event_id reused under a new key is accepted once with a server-generated event_id', async () => {
+    // arrange
+    const h = createSubmitLeadHarness();
+    const first = accepted(await h.submit());
+    // act
+    const reused = accepted(
+      await h.submit({
+        idempotencyKey: SECOND_KEY,
+        body: validBody({ tracking: { event_id: CLIENT_EVENT_ID } }),
+      }),
+    );
+    // assert
+    expect(reused.outcome).toBe('accepted');
+    expect(reused.accepted.eventId).toMatch(UUID);
+    expect(reused.accepted.eventId).not.toBe(first.accepted.eventId);
+    expect(h.persistedRows()).toMatchObject({ leads: 1, submissions: 2, outbox: 2, audit: 2 });
+    expect(h.submissions.records.map((record) => record.eventId)).toEqual([
+      CLIENT_EVENT_ID,
+      reused.accepted.eventId,
+    ]);
+  });
+
+  it('a second event_id collision in a row is an infrastructure error and frees the claim', async () => {
+    // arrange
+    const h = createSubmitLeadHarness();
+    vi.spyOn(h.submissions, 'insert').mockResolvedValue('duplicate_event_id');
+    // act
+    const outcome = h.submit();
+    // assert
+    await expect(outcome).rejects.toThrow('same event id');
+    expect(h.idempotency.stateOf(WORKSPACE_ID, IDEMPOTENCY_KEY)).toBeUndefined();
+    expect(h.persistedRows()).toEqual(EMPTY_ROWS);
+  });
+
   it('treats a duplicate that cannot be found as an infrastructure error and frees the claim', async () => {
     // arrange
     const h = createSubmitLeadHarness();

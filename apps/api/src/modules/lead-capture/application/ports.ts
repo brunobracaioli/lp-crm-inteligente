@@ -167,11 +167,15 @@ export interface StoredSubmissionReference {
 }
 
 export interface SubmissionRepository {
-  /** `ON CONFLICT (workspace_id, idempotency_key) DO NOTHING` — never aborts the transaction. */
+  /**
+   * `ON CONFLICT DO NOTHING` — never aborts the transaction. Reports which UNIQUE was hit:
+   * `(workspace_id, idempotency_key)` → replay path; `(workspace_id, event_id)` → the client reused a
+   * Pixel `event_id` under a new key, the use case retries once with a server-generated id.
+   */
   insert(
     tx: Transaction,
     submission: SubmissionRecord,
-  ): Promise<'inserted' | 'duplicate_idempotency_key'>;
+  ): Promise<'inserted' | 'duplicate_idempotency_key' | 'duplicate_event_id'>;
   /** Replay path when Redis was unavailable and the key already exists in the database. */
   findByIdempotencyKey(
     tx: Transaction,

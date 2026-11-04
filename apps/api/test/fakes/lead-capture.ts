@@ -209,7 +209,7 @@ export class FakeSubmissionRepository implements SubmissionRepository, Transacti
   insert(
     tx: Transaction,
     submission: SubmissionRecord,
-  ): Promise<'inserted' | 'duplicate_idempotency_key'> {
+  ): Promise<'inserted' | 'duplicate_idempotency_key' | 'duplicate_event_id'> {
     this.#log?.record('submissions.insert');
     this.#registry.assertWritable(tx, submission.workspaceId);
     const duplicate = this.#table.rows.some(
@@ -219,6 +219,12 @@ export class FakeSubmissionRepository implements SubmissionRepository, Transacti
     );
     if (duplicate) {
       return Promise.resolve('duplicate_idempotency_key');
+    }
+    const eventIdTaken = this.#table.rows.some(
+      (row) => row.workspaceId === submission.workspaceId && row.eventId === submission.eventId,
+    );
+    if (eventIdTaken) {
+      return Promise.resolve('duplicate_event_id');
     }
     this.#table.add(submission);
     return Promise.resolve('inserted');
