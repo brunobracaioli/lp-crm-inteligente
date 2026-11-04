@@ -58,6 +58,7 @@ produção: use `docs/how-to/rotate-db-role-password.md`.
 | `unit-of-work-rls.test.ts` | `set_config` local à transação, commit/rollback, timeout de statement, acesso cross-tenant negado (leitura e escrita), `lp_api` sem `DELETE` |
 | `crm-repositories.test.ts` | Round-trip do `Lead`, corrida de `insertIfAbsent`, `FOR UPDATE`, lock otimista, atividades, ICP |
 | `lead-capture-repositories.test.ts` | Form lookup, submissão (idempotency key e `event_id` duplicados), consentimentos, outbox, auditoria |
+| `staff-membership.test.ts` | Resolução da membership do staff por `lp_api` (ativo, inativo, ausente, ambíguo), isolamento cross-tenant de `core.workspace_members`, `lp_api` somente leitura, diretório de membros |
 | `submit-lead.integration.test.ts` | AC-LC-01, 04, 09/10 (barreira do banco), 13 (metade do banco), 14 e 18 com `createSubmitLead` e adapters reais |
 
 ## Problemas comuns
