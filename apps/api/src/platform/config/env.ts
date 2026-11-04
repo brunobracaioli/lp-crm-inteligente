@@ -50,6 +50,8 @@ const rawEnvSchema = z.object({
   APP_ENV: appEnvSchema,
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   CORS_ALLOWED_ORIGINS: z.string().min(1),
+  /** Wave 9b — origins of the CRM web app allowed on `/v1/crm/*` (separate from the LP allowlist). */
+  CRM_WEB_ORIGINS: optional(z.string()),
   // Wave 1/4 — Postgres
   DATABASE_URL: optional(z.string().startsWith('postgres')),
   DATABASE_CA_CERT: optional(z.base64()),
@@ -88,6 +90,8 @@ export interface Config {
   readonly appEnv: AppEnv;
   readonly logLevel: z.infer<typeof rawEnvSchema>['LOG_LEVEL'];
   readonly corsAllowedOrigins: readonly string[];
+  /** Browser origins allowed on `/v1/crm/*` only (empty = no browser origin; staff API stays bearer-only). */
+  readonly crmWebOrigins: readonly string[];
   readonly database:
     { readonly url: string; readonly caCertBase64: string | undefined } | undefined;
   readonly supabase: { readonly url: string | undefined; readonly projectRef: string | undefined };
@@ -128,21 +132,26 @@ export class ConfigError extends Error {
   }
 }
 
-function parseOrigins(raw: string, appEnv: AppEnv): { origins: string[]; issues: string[] } {
+function parseOrigins(
+  name: string,
+  raw: string,
+  appEnv: AppEnv,
+  options: { readonly allowEmpty?: boolean } = {},
+): { origins: string[]; issues: string[] } {
   const origins = raw
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
   const issues: string[] = [];
-  if (origins.length === 0) {
-    issues.push('CORS_ALLOWED_ORIGINS: must list at least one origin');
+  if (origins.length === 0 && options.allowEmpty !== true) {
+    issues.push(`${name}: must list at least one origin`);
   }
   origins.forEach((origin, index) => {
     const allowed =
       HTTPS_ORIGIN.test(origin) || (appEnv === 'development' && LOCALHOST_ORIGIN.test(origin));
     if (!allowed) {
       issues.push(
-        `CORS_ALLOWED_ORIGINS[${index}]: must be an https origin without path` +
+        `${name}[${index}]: must be an https origin without path` +
           (appEnv === 'development' ? ' (or http://localhost in development)' : ''),
       );
     }
@@ -173,8 +182,19 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
   const e = parsed.data;
   const issues: string[] = [];
 
-  const { origins, issues: originIssues } = parseOrigins(e.CORS_ALLOWED_ORIGINS, e.APP_ENV);
+  const { origins, issues: originIssues } = parseOrigins(
+    'CORS_ALLOWED_ORIGINS',
+    e.CORS_ALLOWED_ORIGINS,
+    e.APP_ENV,
+  );
   issues.push(...originIssues);
+  const { origins: crmOrigins, issues: crmOriginIssues } = parseOrigins(
+    'CRM_WEB_ORIGINS',
+    e.CRM_WEB_ORIGINS ?? '',
+    e.APP_ENV,
+    { allowEmpty: true },
+  );
+  issues.push(...crmOriginIssues);
   checkGroup(e, ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'], issues);
   checkGroup(
     e,
@@ -209,6 +229,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
     appEnv: e.APP_ENV,
     logLevel: e.LOG_LEVEL,
     corsAllowedOrigins: origins,
+    crmWebOrigins: crmOrigins,
     database:
       e.DATABASE_URL === undefined
         ? undefined
