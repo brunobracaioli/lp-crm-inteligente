@@ -114,6 +114,7 @@ export async function purgeWorkspaces(admin: Sql, workspaceIds: readonly string[
         await tx`DELETE FROM crm.lead_activities WHERE workspace_id = ${workspaceId}`;
         await tx`DELETE FROM crm.leads WHERE workspace_id = ${workspaceId}`;
         await tx`DELETE FROM core.audit_log WHERE workspace_id = ${workspaceId}`;
+        await tx`DELETE FROM core.workspace_members WHERE workspace_id = ${workspaceId}`;
         await tx`DELETE FROM core.forms WHERE workspace_id = ${workspaceId}`;
         await tx`DELETE FROM core.workspaces WHERE id = ${workspaceId}`;
       }

@@ -76,6 +76,30 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...BASE, CORS_ALLOWED_ORIGINS: '*' })).toThrow(ConfigError);
   });
 
+  it('defaults CRM_WEB_ORIGINS to no origin and parses a list when set', () => {
+    expect(loadConfig(BASE).crmWebOrigins).toEqual([]);
+    expect(loadConfig({ ...BASE, CRM_WEB_ORIGINS: '' }).crmWebOrigins).toEqual([]);
+    expect(
+      loadConfig({
+        ...BASE,
+        CRM_WEB_ORIGINS: 'https://crm.example.com.br, http://localhost:5173',
+      }).crmWebOrigins,
+    ).toEqual(['https://crm.example.com.br', 'http://localhost:5173']);
+  });
+
+  it('rejects invalid CRM_WEB_ORIGINS naming the variable only', () => {
+    const error = captureConfigError({
+      ...BASE,
+      APP_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://www.example.com.br',
+      CRM_WEB_ORIGINS: 'http://localhost:5173, https://crm.example.com.br/app, *',
+    });
+    expect(error.message).toContain('CRM_WEB_ORIGINS[0]');
+    expect(error.message).toContain('CRM_WEB_ORIGINS[1]');
+    expect(error.message).toContain('CRM_WEB_ORIGINS[2]');
+    expect(error.message).not.toContain('crm.example.com.br/app');
+  });
+
   it('requires grouped variables together', () => {
     const error = captureConfigError({ ...BASE, UPSTASH_REDIS_REST_URL: 'https://x.upstash.io' });
     expect(error.message).toContain('UPSTASH_REDIS_REST_TOKEN');

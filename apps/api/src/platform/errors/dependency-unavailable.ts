@@ -1,5 +1,6 @@
 /** Infrastructure dependencies whose outage is reported as `503 service_unavailable`. */
-export type UnavailableDependency = 'database' | 'cache';
+/** `identity_provider`: the JWKS of Supabase Auth could not be obtained (staff authentication, fail-closed). */
+export type UnavailableDependency = 'database' | 'cache' | 'identity_provider';
 
 /**
  * A required dependency is down or timed out (connection refused, pool exhausted, statement
