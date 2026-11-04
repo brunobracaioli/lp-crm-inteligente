@@ -4,7 +4,10 @@ import type {
 } from '#/modules/crm/application/commands/ports.ts';
 import type { LeadSubjectExport } from '#/modules/crm/application/commands/export-lead-data.ts';
 import type { LeadState } from '#/modules/crm/application/ports.ts';
-import { leadSummaryView, type LeadSummaryView } from '#/modules/crm/presentation/mutation-views.ts';
+import {
+  leadSummaryView,
+  type LeadSummaryView,
+} from '#/modules/crm/presentation/mutation-views.ts';
 import type { AttributionSnapshot } from '#/shared/lead-profile.ts';
 
 /**
