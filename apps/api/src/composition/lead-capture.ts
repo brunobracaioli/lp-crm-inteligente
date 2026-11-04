@@ -5,13 +5,13 @@ import { createHmacHasher } from '#/platform/crypto/hashing.ts';
 import {
   createPostgresAuditLogWriter,
   createPostgresUnitOfWork,
-  createSqlClient,
+  type Sql,
 } from '#/platform/db/index.ts';
 import type { AppEnv } from '#/platform/http/app-env.ts';
 import type { Logger } from '#/platform/logger/logger.ts';
 import type { Metrics } from '#/platform/metrics/metrics.ts';
 import { systemClock } from '#/platform/runtime/system-clock.ts';
-import { createUuidV7Generator } from '#/platform/runtime/uuid-v7.ts';
+import type { IdGenerator } from '#/shared/ids.ts';
 import { createPostgresIcpSettingsProvider } from '#/modules/crm/infrastructure/postgres-icp-settings-provider.ts';
 import { createPostgresLeadActivityRepository } from '#/modules/crm/infrastructure/postgres-lead-activity-repository.ts';
 import { createPostgresLeadRepository } from '#/modules/crm/infrastructure/postgres-lead-repository.ts';
@@ -42,6 +42,9 @@ const REDIS_RETRY_BACKOFF_MS = 50;
 
 export interface LeadCaptureCompositionInput {
   readonly config: Config;
+  /** Shared Postgres client; null when `DATABASE_URL` is not configured (development only). */
+  readonly sql: Sql | null;
+  readonly ids: IdGenerator;
   readonly logger: Logger;
   readonly metrics: Metrics;
   /** Post-commit publish of the outbox event (Onda 5b); until then the sweeper picks it up. */
@@ -49,7 +52,6 @@ export interface LeadCaptureCompositionInput {
 }
 
 interface LeadCaptureSecrets {
-  readonly database: NonNullable<Config['database']>;
   readonly upstashRedis: NonNullable<Config['upstashRedis']>;
   readonly turnstileSecretKey: string;
   readonly hashPepper: string;
@@ -57,16 +59,11 @@ interface LeadCaptureSecrets {
 
 /** Null when a lead-capture dependency is not configured (allowed in development only, see env.ts). */
 function leadCaptureSecrets(config: Config): LeadCaptureSecrets | null {
-  const { database, upstashRedis, turnstileSecretKey, hashPepper } = config;
-  if (
-    database === undefined ||
-    upstashRedis === undefined ||
-    turnstileSecretKey === undefined ||
-    hashPepper === undefined
-  ) {
+  const { upstashRedis, turnstileSecretKey, hashPepper } = config;
+  if (upstashRedis === undefined || turnstileSecretKey === undefined || hashPepper === undefined) {
     return null;
   }
-  return { database, upstashRedis, turnstileSecretKey, hashPepper };
+  return { upstashRedis, turnstileSecretKey, hashPepper };
 }
 
 /**
@@ -75,21 +72,19 @@ function leadCaptureSecrets(config: Config): LeadCaptureSecrets | null {
  * the dependencies are missing in development, so `vercel dev` still boots for the health probe.
  */
 export function composeLeadCapture(input: LeadCaptureCompositionInput): readonly Hono<AppEnv>[] {
-  const { config, logger, metrics } = input;
+  const { config, logger, metrics, sql, ids } = input;
   const secrets = leadCaptureSecrets(config);
-  if (secrets === null) {
+  if (secrets === null || sql === null) {
     logger.warn({ route: 'POST /v1/leads' }, 'lead capture not configured; route not mounted');
     return [];
   }
 
-  const sql = createSqlClient(secrets.database);
   const redis = new Redis({
     url: secrets.upstashRedis.url,
     token: secrets.upstashRedis.token,
     retry: REDIS_RETRY,
   });
   const hmac = createHmacHasher(secrets.hashPepper);
-  const ids = createUuidV7Generator();
 
   const registerInboundLead = createRegisterInboundLead({
     leads: createPostgresLeadRepository(),

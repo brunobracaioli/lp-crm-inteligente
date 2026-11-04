@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LP + CRM Inteligente API
-  version: 1.0.0-draft.4
+  version: 1.0.0-draft.5
   description: |
     Contrato API-first do backend (Vercel). Fonte da verdade para o front (LP e CRM web — Codex) e para os testes.
     Specs: docs/specs/lead-capture.md, docs/specs/tracking.md, docs/specs/crm.md.
@@ -21,6 +21,11 @@ info:
     - `x-audit-action`: ação gravada em `core.audit_log` (sucesso e negação), sem PII.
 
     Changelog:
+    - 1.0.0-draft.5 (2026-11-04, Onda 5b): `/internal/v1/outbox/dispatch` e `/sweep` documentam as respostas que
+      a implementação já emite depois da assinatura: `400` (`invalid_json` | `validation_failed`), `413`
+      (`payload_too_large`, corpo > 1 KB) e `503` (`service_unavailable`, banco indisponível); `sweep` também
+      documenta `500`. Compatibilidade: SOMENTE ADITIVO; o único cliente é o QStash, que retenta 5xx e não retenta
+      4xx. O schedule do sweep envia o corpo `{}` explicitamente (o corpo é obrigatório).
     - 1.0.0-draft.4 (2026-11-04, Onda 4): `Retry-After` passa a ser obrigatório (`RetryAfterRequired`) nas respostas
       `Conflict` (409 `idempotency_in_progress`), `TooManyRequests` (429 `rate_limited`) e `ServiceUnavailable`
       (503), como a implementação de `POST /v1/leads` já emite. Compatibilidade: só reforça uma garantia ao cliente;
@@ -143,8 +148,11 @@ paths:
                 outbox_event_id: { type: string, format: uuid }
       responses:
         '200': { description: Todas as entregas concluídas ou definitivamente descartadas }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '500': { description: Alguma entrega falhou de forma retentável (QStash deve retentar) }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /internal/v1/outbox/sweep:
     post:
@@ -169,7 +177,11 @@ paths:
                 required: [republished]
                 properties:
                   republished: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /v1/crm/me:
     parameters:

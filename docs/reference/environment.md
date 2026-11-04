@@ -36,10 +36,13 @@ QSTASH_TOKEN=
 QSTASH_CURRENT_SIGNING_KEY=
 QSTASH_NEXT_SIGNING_KEY=
 PUBLIC_API_BASE_URL=
+# v1 single-workspace (ADR-0006): workspace das rotas internas do outbox (UUID de core.workspaces)
+DEFAULT_WORKSPACE_ID=
 META_PIXEL_ID=
 META_CAPI_ACCESS_TOKEN=
 META_GRAPH_API_VERSION=v25.0
 META_TEST_EVENT_CODE=
+GA4_MP_ENABLED=false
 GA4_MEASUREMENT_ID=
 GA4_API_SECRET=
 
@@ -55,6 +58,13 @@ AI_GATEWAY_API_KEY=
 ```
 
 ## Notas
+
+- **Obrigatórias fora de `development`** (o boot falha citando o nome, nunca o valor): `DATABASE_URL`,
+  `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `TURNSTILE_SECRET_KEY`, `HASH_PEPPER` (Onda 4) e
+  `QSTASH_*`, `PUBLIC_API_BASE_URL`, `DEFAULT_WORKSPACE_ID` (Onda 5b). Em `development`, sem elas a rota
+  correspondente simplesmente não é montada.
+- `META_PIXEL_ID` e `META_CAPI_ACCESS_TOKEN` vão juntos; sem eles o destino `meta_capi` não é ligado.
+  `GA4_MP_ENABLED=true` exige `GA4_MEASUREMENT_ID` e `GA4_API_SECRET`.
 
 - **Não é necessária** a `service_role`/secret key do Supabase no runtime (ADR-0003).
 - `DATABASE_URL` usa o usuário `lp_api.<project_ref>` e `sslmode=verify-full`; o CA vai em

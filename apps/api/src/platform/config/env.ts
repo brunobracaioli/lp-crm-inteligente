@@ -29,6 +29,19 @@ const LEAD_CAPTURE_VARIABLES = [
   'HASH_PEPPER',
 ] as const;
 
+/**
+ * Wired by Onda 5b (outbox → QStash → Meta CAPI): also mandatory in deployed environments, since a
+ * deploy without them would capture leads whose conversions are never delivered.
+ */
+const TRACKING_VARIABLES = [
+  'QSTASH_URL',
+  'QSTASH_TOKEN',
+  'QSTASH_CURRENT_SIGNING_KEY',
+  'QSTASH_NEXT_SIGNING_KEY',
+  'PUBLIC_API_BASE_URL',
+  'DEFAULT_WORKSPACE_ID',
+] as const;
+
 const appEnvSchema = z.enum(['development', 'preview', 'production']);
 export type AppEnv = z.infer<typeof appEnvSchema>;
 
@@ -64,6 +77,9 @@ const rawEnvSchema = z.object({
     .regex(/^v[0-9]{1,3}\.[0-9]$/)
     .default('v25.0'),
   META_TEST_EVENT_CODE: optional(z.string().regex(/^TEST[0-9A-Za-z]{1,20}$/)),
+  /** v1 runs one workspace (ADR-0006): the tenant of the internal outbox routes, never from a request. */
+  DEFAULT_WORKSPACE_ID: optional(z.uuid()),
+  GA4_MP_ENABLED: z.enum(['true', 'false']).default('false'),
   GA4_MEASUREMENT_ID: optional(z.string().regex(/^G-[A-Z0-9]{4,20}$/)),
   GA4_API_SECRET: optional(z.string().min(1)),
 });
@@ -87,6 +103,7 @@ export interface Config {
       }
     | undefined;
   readonly publicApiBaseUrl: string | undefined;
+  readonly defaultWorkspaceId: string | undefined;
   readonly meta: {
     readonly pixelId: string | undefined;
     readonly capiAccessToken: string | undefined;
@@ -94,6 +111,7 @@ export interface Config {
     readonly testEventCode: string | undefined;
   };
   readonly ga4: {
+    readonly enabled: boolean;
     readonly measurementId: string | undefined;
     readonly apiSecret: string | undefined;
   };
@@ -164,11 +182,18 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
     issues,
   );
   if (e.APP_ENV !== 'development') {
-    for (const name of LEAD_CAPTURE_VARIABLES) {
+    for (const name of [...LEAD_CAPTURE_VARIABLES, ...TRACKING_VARIABLES]) {
       if (e[name] === undefined) {
         issues.push(`${name}: required in ${e.APP_ENV}`);
       }
     }
+  }
+  checkGroup(e, ['META_PIXEL_ID', 'META_CAPI_ACCESS_TOKEN'], issues);
+  if (
+    e.GA4_MP_ENABLED === 'true' &&
+    (e.GA4_MEASUREMENT_ID === undefined || e.GA4_API_SECRET === undefined)
+  ) {
+    issues.push('GA4_MP_ENABLED: requires GA4_MEASUREMENT_ID and GA4_API_SECRET');
   }
   if (e.APP_ENV === 'production' && e.META_TEST_EVENT_CODE !== undefined) {
     issues.push('META_TEST_EVENT_CODE: must not be set in production');
@@ -208,13 +233,17 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
           }
         : undefined,
     publicApiBaseUrl: e.PUBLIC_API_BASE_URL,
+    defaultWorkspaceId: e.DEFAULT_WORKSPACE_ID,
     meta: {
       pixelId: e.META_PIXEL_ID,
       capiAccessToken: e.META_CAPI_ACCESS_TOKEN,
       graphApiVersion: e.META_GRAPH_API_VERSION,
       testEventCode: e.META_TEST_EVENT_CODE,
     },
-    // False positive for generic-api-key: maps the variable, never a literal value.
-    ga4: { measurementId: e.GA4_MEASUREMENT_ID, apiSecret: e.GA4_API_SECRET }, // gitleaks:allow
+    ga4: {
+      enabled: e.GA4_MP_ENABLED === 'true',
+      measurementId: e.GA4_MEASUREMENT_ID,
+      apiSecret: e.GA4_API_SECRET, // gitleaks:allow — maps the variable, never a literal value
+    },
   };
 }
