@@ -121,6 +121,27 @@ done
 [[ $pattern_hits -eq 0 ]] && ok "no forbidden patterns"
 
 # ---------------------------------------------------------------------------
+step "Formatting (prettier --check, same as CI format:check)"
+if [[ ! -x node_modules/.bin/prettier ]]; then
+  fail "prettier not installed — run: pnpm install --frozen-lockfile"
+elif [[ "$MODE" == "full" ]]; then
+  if node_modules/.bin/prettier --check . >/dev/null; then
+    ok "prettier"
+  else
+    fail "prettier --check . — fix with: pnpm format"
+  fi
+else
+  existing=()
+  for f in "${FILES[@]}"; do [[ -f "$f" ]] && existing+=("$f"); done
+  if [[ ${#existing[@]} -eq 0 ]] ||
+    node_modules/.bin/prettier --check --ignore-unknown -- "${existing[@]}" >/dev/null; then
+    ok "prettier"
+  else
+    fail "prettier --check on staged files — fix with: pnpm exec prettier --write <file>"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 workspace_title="lint · typecheck · test"
 [[ "$MODE" == "full" ]] && workspace_title+=" · build"
 step "Workspace: $workspace_title"
