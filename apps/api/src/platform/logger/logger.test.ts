@@ -37,6 +37,35 @@ describe('createLogger', () => {
     expect(output).toContain('lead received');
   });
 
+  it('N6: redacts free-text form fields and whole payload containers', () => {
+    // arrange
+    const { logger, lines } = captureLogger();
+    const freeText = {
+      company: 'Empresa Exemplo',
+      company_website: 'https://empresa.example',
+      job_title: 'Diretora de Marketing',
+      hp: 'bot-filled',
+      fields: { message: 'Me liga no 11 91234-5678' },
+      body: { anything: 'raw request' },
+    };
+    // act
+    logger.warn(freeText, 'unexpected payload');
+    // assert
+    const output = lines.join('');
+    for (const value of [
+      '91234-5678',
+      'Empresa Exemplo',
+      'empresa.example',
+      'Diretora',
+      'bot-filled',
+      'livre',
+      'raw request',
+    ]) {
+      expect(output).not.toContain(value);
+    }
+    expect(output).toContain('unexpected payload');
+  });
+
   it('redacts nested objects, arrays and child bindings', () => {
     const { logger, lines } = captureLogger();
 
