@@ -51,3 +51,9 @@ export type RegisterInboundLead = (
   tx: Transaction,
   command: RegisterInboundLeadCommand,
 ) => Promise<RegisterInboundLeadResult>;
+
+/** Factory for the composition root (Onda 4); callers still depend only on the types above. */
+export {
+  createRegisterInboundLead,
+  type RegisterInboundLeadDependencies,
+} from '#/modules/crm/application/register-inbound-lead.ts';
