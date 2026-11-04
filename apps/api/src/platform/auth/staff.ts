@@ -47,7 +47,10 @@ export type RateLimitFailMode = 'open' | 'closed';
 export interface StaffGuards {
   /** Verifies the bearer token and resolves the membership; sets `staff` or throws 401/403. */
   readonly authenticate: MiddlewareHandler<StaffEnv>;
-  readonly rateLimit: (bucket: StaffRateBucket, fail: RateLimitFailMode) => MiddlewareHandler<StaffEnv>;
+  readonly rateLimit: (
+    bucket: StaffRateBucket,
+    fail: RateLimitFailMode,
+  ) => MiddlewareHandler<StaffEnv>;
 }
 
 /** Contract `x-max-auth-age-seconds` for export, data-export and anonymize (confirm). */

@@ -38,7 +38,11 @@ function planFirewall(): string[] {
       ? `vercel firewall rules edit ${rule.name} --json ${payload} --yes`
       : `vercel firewall rules add --json ${payload} --yes`;
   });
-  return [...commands, 'vercel firewall diff', '# review the diff, then: vercel firewall publish --yes'];
+  return [
+    ...commands,
+    'vercel firewall diff',
+    '# review the diff, then: vercel firewall publish --yes',
+  ];
 }
 
 function planMonitors(): string[] {
