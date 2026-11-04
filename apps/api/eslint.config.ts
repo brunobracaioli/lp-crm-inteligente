@@ -96,7 +96,8 @@ const moduleBoundaryConfigs: Linter.Config[] = MODULES.flatMap((moduleName): Lin
 ]);
 
 export default defineConfig(
-  { ignores: ['dist/**', 'coverage/**', 'node_modules/**'] },
+  // api/ holds only the Vercel entry shim that re-exports dist/ (see api/index.js).
+  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'api/**'] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
