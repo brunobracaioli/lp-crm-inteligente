@@ -22,6 +22,13 @@
   queda do banco → `503 service_unavailable` + `Retry-After`. Contrato → `1.0.0-draft.4` (`Retry-After` obrigatório).
   Falta para ✅: deploy de preview + env vars de preview na Vercel (ação externa, exige confirmação do dono) e `curl`
   com chave Turnstile de teste retornando `202`. O outbox fica `pending` até a 5b.
+- 2026-11-04 — **Onda 5b** 🟡 código pronto na branch `feat/wave-5b-tracking-wiring` (sobre a 4). App/rotas/repos
+  feitos por subagent Sonnet high, wiring na sessão principal. `verify.sh full` verde (967 testes) e
+  `test:integration` 85/85 (inclui AC-TR-01/02/04/05/07 com Postgres, cross-tenant e dispatch concorrente).
+  Contrato → `1.0.0-draft.5`. ADR-0008 (proposed): leitura somente-leitura de `crm`/`capture` pelo adapter do
+  tracking — **decisão do dono**. Novas envs: `DEFAULT_WORKSPACE_ID` (obrigatória fora de dev), `GA4_MP_ENABLED`
+  (o template `.env.example` precisa delas; `.env*` é editado só pelo dono). Falta para ✅: preview, aplicar o
+  schedule (`apps/api/scripts/qstash-schedules.ts --apply`, ação externa) e AC-TR-01 manual no Meta Test Events.
 - Pendências que continuam para a **9b**: 7 códigos novos do draft.3 em `platform/errors/problem.ts`; CORS separado
   para o CRM web.
 - Pendências para **5b / 6b**: `gaClientId` no port de tracking e flag `GA4_MP_ENABLED`; sweeper recebe o
@@ -46,7 +53,7 @@
 | 3 | Adapters Turnstile / Upstash | ✅ |
 | 4 | Slice `POST /v1/leads` + preview | 🟡 código pronto; falta preview |
 | 5a | Tracking isolado (domínio, CAPI client, assinatura QStash) | ✅ |
-| 5b | Tracking wiring (outbox, rotas internas, sweeper) | ⬜ |
+| 5b | Tracking wiring (outbox, rotas internas, sweeper) | 🟡 código pronto; falta preview |
 | 6a | Hardening sem conflito (runbooks, k6, ZAP) | ⬜ |
 | 6b | Hardening & operação (retenção, `anonymize_lead`, Firewall, alertas) | ⬜ |
 | 7a | LP contra mock (Codex) | ⬜ |

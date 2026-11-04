@@ -95,6 +95,23 @@ describe('loadConfig', () => {
       'UPSTASH_REDIS_REST_TOKEN: required in preview',
       'TURNSTILE_SECRET_KEY: required in preview',
       'HASH_PEPPER: required in preview',
+      'QSTASH_URL: required in preview',
+      'QSTASH_TOKEN: required in preview',
+      'QSTASH_CURRENT_SIGNING_KEY: required in preview',
+      'QSTASH_NEXT_SIGNING_KEY: required in preview',
+      'PUBLIC_API_BASE_URL: required in preview',
+      'DEFAULT_WORKSPACE_ID: required in preview',
+    ]);
+  });
+
+  it('keeps GA4 Measurement Protocol off unless explicitly enabled with its credentials', () => {
+    // act
+    const off = loadConfig(BASE);
+    const misconfigured = captureConfigError({ ...BASE, GA4_MP_ENABLED: 'true' });
+    // assert
+    expect(off.ga4.enabled).toBe(false);
+    expect(misconfigured.issues).toEqual([
+      'GA4_MP_ENABLED: requires GA4_MEASUREMENT_ID and GA4_API_SECRET',
     ]);
   });
 
