@@ -3,10 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PostgresLeadConversionSourceReader } from '#/modules/tracking/infrastructure/postgres-lead-conversion-source-reader.ts';
 import type { LeadCapturedPayload } from '#/modules/tracking/public-api.ts';
 import {
-  RUNTIME_DATABASE_URL,
   TestPostgresUnitOfWork,
-  connectAdmin,
-  connectRuntime,
+  connectTrackingDatabases,
   deleteWorkspace,
   seedSubmission,
   seedWorkspace,
@@ -19,7 +17,7 @@ function payloadOf(submission: SeededSubmission): LeadCapturedPayload {
   return { lead_id: submission.leadId, submission_id: submission.submissionId };
 }
 
-describe.skipIf(RUNTIME_DATABASE_URL === undefined)('PostgresLeadConversionSourceReader', () => {
+describe('PostgresLeadConversionSourceReader', () => {
   let admin: Sql;
   let runtime: Sql;
   let uow: TestPostgresUnitOfWork;
@@ -32,9 +30,8 @@ describe.skipIf(RUNTIME_DATABASE_URL === undefined)('PostgresLeadConversionSourc
     return { workspace, submission: await seedSubmission(admin, workspace, options) };
   }
 
-  beforeAll(() => {
-    admin = connectAdmin();
-    runtime = connectRuntime();
+  beforeAll(async () => {
+    ({ admin, runtime } = await connectTrackingDatabases());
     uow = new TestPostgresUnitOfWork(runtime);
     reader = new PostgresLeadConversionSourceReader(uow.resolve);
   });

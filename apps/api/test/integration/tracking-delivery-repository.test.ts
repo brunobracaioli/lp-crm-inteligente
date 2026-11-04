@@ -4,10 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Delivery } from '#/modules/tracking/domain/delivery.ts';
 import { PostgresDeliveryRepository } from '#/modules/tracking/infrastructure/postgres-delivery-repository.ts';
 import {
-  RUNTIME_DATABASE_URL,
   TestPostgresUnitOfWork,
-  connectAdmin,
-  connectRuntime,
+  connectTrackingDatabases,
   deleteWorkspace,
   readDeliveries,
   seedOutboxEvent,
@@ -18,7 +16,7 @@ import {
 
 const NOW = new Date('2026-11-03T12:00:00.000Z');
 
-describe.skipIf(RUNTIME_DATABASE_URL === undefined)('PostgresDeliveryRepository', () => {
+describe('PostgresDeliveryRepository', () => {
   let admin: Sql;
   let runtime: Sql;
   let uow: TestPostgresUnitOfWork;
@@ -33,9 +31,8 @@ describe.skipIf(RUNTIME_DATABASE_URL === undefined)('PostgresDeliveryRepository'
     return { workspace, id };
   }
 
-  beforeAll(() => {
-    admin = connectAdmin();
-    runtime = connectRuntime();
+  beforeAll(async () => {
+    ({ admin, runtime } = await connectTrackingDatabases());
     uow = new TestPostgresUnitOfWork(runtime);
     repository = new PostgresDeliveryRepository(uow.resolve, { uuidv7: () => randomUUID() });
   });

@@ -1,63 +1,38 @@
 import { randomUUID } from 'node:crypto';
-import postgres, { type Sql, type TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
+import { createPostgresUnitOfWork, unwrapTransaction } from '#/platform/db/index.ts';
+import { openTestDatabase } from '#test/integration/support/database.ts';
 import type { OutboxStatus } from '#/modules/tracking/application/ports.ts';
 import type { LeadId, OutboxEventId, SubmissionId, WorkspaceId } from '#/shared/ids.ts';
 import type { Transaction, UnitOfWork } from '#/shared/unit-of-work.ts';
 
 /**
- * Integration harness for the tracking adapters. Two connections, like production vs. migrations:
- *
- * - `TEST_DATABASE_URL`: the runtime role `lp_api` (RLS applies, no BYPASSRLS). Everything under
- *   test runs through it.
- * - `TEST_DATABASE_ADMIN_URL`: the migration owner, used ONLY to seed fixtures and to read state
- *   back. Defaults to the local `supabase start` Postgres.
- *
- * The suite is skipped when `TEST_DATABASE_URL` is unset so `pnpm test:integration` stays usable
- * without a database.
+ * Integration harness for the tracking adapters, on the shared local-database support of Onda 4
+ * (`support/database.ts`: `TEST_DATABASE_URL` as `lp_api` under RLS, `TEST_ADMIN_DATABASE_URL` as
+ * the migration owner for fixtures only, loopback hosts only, `lp_api` password synced locally).
  */
-export const RUNTIME_DATABASE_URL = process.env.TEST_DATABASE_URL;
-const ADMIN_DATABASE_URL =
-  process.env.TEST_DATABASE_ADMIN_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
+export async function connectTrackingDatabases(): Promise<{ admin: Sql; runtime: Sql }> {
+  const { admin, app } = await openTestDatabase({ maxConnections: POOL_SIZE });
+  return { admin, runtime: app };
+}
 
 const POOL_SIZE = 5;
 
-export function connectRuntime(): Sql {
-  if (RUNTIME_DATABASE_URL === undefined) throw new Error('TEST_DATABASE_URL is not set');
-  return postgres(RUNTIME_DATABASE_URL, { max: POOL_SIZE, onnotice: () => undefined });
-}
-
-export function connectAdmin(): Sql {
-  return postgres(ADMIN_DATABASE_URL, { max: 2, onnotice: () => undefined });
-}
-
 /**
- * Minimal Postgres unit of work with the semantics of the production one (ADR-0003): one
- * transaction per `run`, `app.workspace_id` set transaction-locally for RLS. The production
- * implementation is owned by the composition root; this one only exists to drive the adapters.
+ * The production `PostgresUnitOfWork` plus the `TransactionSqlResolver` the tracking adapters take
+ * (`unwrapTransaction`), so the suite exercises exactly what the composition root wires.
  */
 export class TestPostgresUnitOfWork implements UnitOfWork {
-  readonly #sql: Sql;
-  readonly #handles = new WeakMap<object, TransactionSql>();
+  readonly #inner: UnitOfWork;
 
   constructor(sql: Sql) {
-    this.#sql = sql;
+    this.#inner = createPostgresUnitOfWork(sql);
   }
 
-  /** `TransactionSqlResolver` for the adapters. */
-  readonly resolve = (tx: Transaction): TransactionSql => {
-    const handle = this.#handles.get(tx);
-    if (handle === undefined) throw new Error('transaction handle is not open');
-    return handle;
-  };
+  readonly resolve = (tx: Transaction): TransactionSql => unwrapTransaction(tx);
 
-  async run<T>(workspaceId: WorkspaceId, work: (tx: Transaction) => Promise<T>): Promise<T> {
-    const result: unknown = await this.#sql.begin(async (transaction) => {
-      await transaction`SELECT pg_catalog.set_config('app.workspace_id', ${workspaceId}, true)`;
-      const token = Object.freeze({}) as unknown as Transaction;
-      this.#handles.set(token, transaction);
-      return work(token);
-    });
-    return result as T;
+  run<T>(workspaceId: WorkspaceId, work: (tx: Transaction) => Promise<T>): Promise<T> {
+    return this.#inner.run(workspaceId, work);
   }
 }
 

@@ -3,10 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PostgresOutboxRepository } from '#/modules/tracking/infrastructure/postgres-outbox-repository.ts';
 import type { OutboxEventId } from '#/shared/ids.ts';
 import {
-  RUNTIME_DATABASE_URL,
   TestPostgresUnitOfWork,
-  connectAdmin,
-  connectRuntime,
+  connectTrackingDatabases,
   deleteWorkspace,
   readOutboxState,
   seedOutboxEvent,
@@ -22,7 +20,7 @@ function ago(ms: number): Date {
   return new Date(NOW.getTime() - ms);
 }
 
-describe.skipIf(RUNTIME_DATABASE_URL === undefined)('PostgresOutboxRepository', () => {
+describe('PostgresOutboxRepository', () => {
   let admin: Sql;
   let runtime: Sql;
   let uow: TestPostgresUnitOfWork;
@@ -35,9 +33,8 @@ describe.skipIf(RUNTIME_DATABASE_URL === undefined)('PostgresOutboxRepository', 
     return { workspace, submission: await seedSubmission(admin, workspace) };
   }
 
-  beforeAll(() => {
-    admin = connectAdmin();
-    runtime = connectRuntime();
+  beforeAll(async () => {
+    ({ admin, runtime } = await connectTrackingDatabases());
     uow = new TestPostgresUnitOfWork(runtime);
     repository = new PostgresOutboxRepository(uow.resolve);
   });
