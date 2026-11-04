@@ -17,6 +17,18 @@ const optional = <T extends z.ZodType>(schema: T) =>
 
 const httpsUrl = z.url({ protocol: /^https$/ });
 
+/**
+ * Wired by Onda 4 (`POST /v1/leads`): mandatory in deployed environments so a preview or production
+ * build never boots without its lead-capture dependencies. Development may omit them (route unmounted).
+ */
+const LEAD_CAPTURE_VARIABLES = [
+  'DATABASE_URL',
+  'UPSTASH_REDIS_REST_URL',
+  'UPSTASH_REDIS_REST_TOKEN',
+  'TURNSTILE_SECRET_KEY',
+  'HASH_PEPPER',
+] as const;
+
 const appEnvSchema = z.enum(['development', 'preview', 'production']);
 export type AppEnv = z.infer<typeof appEnvSchema>;
 
@@ -151,6 +163,13 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
     ['QSTASH_URL', 'QSTASH_TOKEN', 'QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY'],
     issues,
   );
+  if (e.APP_ENV !== 'development') {
+    for (const name of LEAD_CAPTURE_VARIABLES) {
+      if (e[name] === undefined) {
+        issues.push(`${name}: required in ${e.APP_ENV}`);
+      }
+    }
+  }
   if (e.APP_ENV === 'production' && e.META_TEST_EVENT_CODE !== undefined) {
     issues.push('META_TEST_EVENT_CODE: must not be set in production');
   }
