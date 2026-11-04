@@ -1,14 +1,34 @@
 openapi: 3.1.0
 info:
   title: LP + CRM Inteligente API
-  version: 1.0.0-draft.2
+  version: 1.0.0-draft.3
   description: |
-    Contrato API-first do backend (Vercel). Fonte da verdade para o front (LP — Codex) e para os testes.
-    Specs: docs/specs/lead-capture.md, docs/specs/tracking.md.
+    Contrato API-first do backend (Vercel). Fonte da verdade para o front (LP e CRM web — Codex) e para os testes.
+    Specs: docs/specs/lead-capture.md, docs/specs/tracking.md, docs/specs/crm.md.
     Política: deny by default. Rotas públicas declaram `security: []` + `x-public-justification`.
-    Rotas do CRM (/v1/crm/*) entram neste contrato na abertura da wave 9.
+    Rotas do CRM (`/v1/crm/*`) nunca são públicas: exigem o token de staff (`staffBearer`), declaram `security`
+    e `x-roles` em toda operação, e o workspace é SEMPRE derivado da credencial (nenhuma rota recebe
+    workspace/tenant por path, query, header ou corpo).
+
+    Extensões `x-*` das operações do CRM:
+    - `x-roles`: papéis de workspace autorizados (allowlist: `owner`, `admin`, `sales`, `viewer`).
+    - `x-role-conditions`: condição adicional por papel (ex.: `sales` só em lead seu ou sem dono).
+    - `x-requires-aal2`: o token precisa ter `aal = aal2` (MFA verificado).
+    - `x-max-auth-age-seconds`: idade máxima da última verificação MFA (ver `staffBearer`).
+    - `x-rate-limit`: `{bucket, limit, window_seconds, fail}` por usuário autenticado; `fail` = `open` | `closed`
+      (comportamento quando o Redis está indisponível).
+    - `x-idempotency`: `required` | `recommended` | `required-on-confirm` (header `Idempotency-Key`).
+    - `x-audit-action`: ação gravada em `core.audit_log` (sucesso e negação), sem PII.
 
     Changelog:
+    - 1.0.0-draft.3 (2026-11-03, Onda 9a): adiciona as rotas `/v1/crm/*` (sessão, listagem/busca/detalhe de leads,
+      mudança de estágio e de dono, notas, export CSV e direitos do titular — LGPD), o scheme `staffBearer`
+      detalhado, a tag `crm-*`, parâmetros/headers/schemas/respostas do CRM e sete valores novos em `Problem.code`
+      (`forbidden`, `mfa_required`, `reauthentication_required`, `version_conflict`, `plan_stale`, `lead_anonymized`,
+      `invalid_stage_transition`). Compatibilidade: SOMENTE ADITIVO — nenhuma operação, parâmetro, schema de
+      requisição/resposta ou código HTTP existente foi alterado; `POST /v1/leads`, `GET /v1/health` e
+      `/internal/v1/outbox/*` seguem idênticos. Clientes existentes devem tratar `code` desconhecido como erro
+      genérico (regra já vigente desde a draft.2).
     - 1.0.0-draft.2 (2026-11-03, Onda 0): `not_found` adicionado a `Problem.code` (rota inexistente →
       404 genérico). Compatível: só adiciona um valor ao enum; clientes devem tratar `code`
       desconhecido como erro genérico.
@@ -26,6 +46,20 @@ tags:
   - name: lead-capture
   - name: platform
   - name: internal
+  - name: crm-session
+    description: >-
+      Sessão do staff: perfil, papel (`owner` | `admin` | `sales` | `viewer`, lido de `core.workspace_members`) e
+      nível de autenticação. O papel `owner` é papel de workspace e não se confunde com o dono (responsável) de um
+      lead, `owner_user_id`.
+  - name: crm-leads
+    description: >-
+      Pipeline de leads: listagem por cursor, busca, detalhe, mudança de estágio (lock otimista), atribuição de dono
+      e notas. Parâmetros de query desconhecidos e corpos com campos extras são rejeitados com 400. Lead de outro
+      workspace responde 404, nunca 403.
+  - name: crm-privacy
+    description: >-
+      Operações sensíveis de dados pessoais, restritas a `owner`/`admin` com MFA (AAL2): export CSV e direitos do
+      titular (exportação e anonimização preview-first, LGPD).
 
 paths:
   /v1/leads:
@@ -132,13 +166,578 @@ paths:
                   republished: { type: integer, minimum: 0 }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /v1/crm/me:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [crm-session]
+      operationId: getCrmMe
+      summary: Perfil, papel e nível de autenticação do usuário de staff
+      description: |
+        Primeira chamada do CRM web após o login. O papel e o workspace vêm de `core.workspace_members` (membro
+        ativo para o `sub` do token), nunca de claims. Usuário autenticado no Supabase mas sem membership ativa
+        recebe `403 forbidden`. `aal` e `mfa_verified_at` permitem à UI decidir se precisa de step-up antes de
+        oferecer export/anonimização; a decisão final é sempre do servidor.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin, sales, viewer]
+      x-rate-limit: { bucket: read, limit: 120, window_seconds: 60, fail: open }
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaffMe'
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/members:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [crm-session]
+      operationId: listCrmMembers
+      summary: Membros do workspace (para resolver nomes de donos e escolher o dono de um lead)
+      description: |
+        Lista os membros do workspace da credencial, ativos e inativos (um lead pode ter dono já desativado).
+        Expõe só `user_id`, nome de exibição e papel — nunca e-mail. Sem paginação: o conjunto é pequeno e limitado
+        a 200 itens.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin, sales, viewer]
+      x-rate-limit: { bucket: read, limit: 120, window_seconds: 60, fail: open }
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaffMemberList'
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [crm-leads]
+      operationId: listLeads
+      summary: Lista leads do workspace (cursor)
+      description: |
+        Ordenação estável e total: `ORDER BY created_at DESC, id ASC`. Paginação por cursor opaco e assinado
+        (`next_cursor` da página anterior); o cursor só vale para o mesmo usuário, workspace e conjunto de filtros —
+        cursor adulterado, expirado ou de outro filtro → `400 validation_failed` (`cursor`/`invalid_format`).
+        Não há contagem total (custo e enumeração). Fim da lista: `next_cursor = null`.
+
+        Esta rota NÃO aceita busca textual: e-mail/nome/empresa em query string vazariam PII para logs de acesso
+        da plataforma. Use `POST /v1/crm/leads/search` para `q`.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin, sales, viewer]
+      x-rate-limit: { bucket: read, limit: 120, window_seconds: 60, fail: open }
+      parameters:
+        - $ref: '#/components/parameters/StageFilter'
+        - $ref: '#/components/parameters/OwnerFilter'
+        - $ref: '#/components/parameters/ScoreBandFilter'
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadPage'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/search:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [crm-leads]
+      operationId: searchLeads
+      summary: Busca leads por prefixo de nome, empresa ou e-mail (leitura; sem efeito colateral)
+      description: |
+        Mesma resposta, ordenação e paginação de `GET /v1/crm/leads`, com o termo `q` no corpo para que PII não
+        apareça em URL/logs. É uma operação de LEITURA (POST só para carregar o corpo): não exige
+        `Idempotency-Key`, não grava audit de negócio e conta no bucket de leitura.
+
+        `q`: prefixo (case-insensitive) de nome, sobrenome, empresa ou e-mail, 2–80 caracteres após o pipeline Unicode
+        (trim, NFC, sem controles/`\p{Cf}`). Curingas de LIKE (`%`, `_`, `\`) são tratados como literais.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin, sales, viewer]
+      x-rate-limit: { bucket: read, limit: 120, window_seconds: 60, fail: open }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeadSearchRequest'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadPage'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/export.csv:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [crm-privacy]
+      operationId: exportLeadsCsv
+      summary: Exporta leads em CSV (owner/admin, MFA recente, limitado a 5 por hora)
+      description: |
+        Exfiltração em massa de PII: restrita a `owner`/`admin` com **AAL2** (`aal = aal2`) e última verificação
+        MFA há no máximo `x-max-auth-age-seconds` (300 s). Papel insuficiente → `403 forbidden`; sem AAL2 →
+        `403 mfa_required`; MFA antigo → `403 reauthentication_required` (a UI faz step-up e repete a chamada).
+        A avaliação é nessa ordem, para que quem não pode exportar não receba dica de MFA. Cota: 5 por hora por
+        usuário, **fail-closed** (Redis indisponível → `503`, nunca exporta sem limite) e uma exportação
+        simultânea por usuário (`429 rate_limited` com `Retry-After` se houver outra em andamento). Auditoria obrigatória
+        (`lead.exported`: filtros aplicados e número de linhas, sem PII), também para tentativas negadas.
+
+        Filtros opcionais reduzem o que sai (minimização); sem filtros exporta o workspace inteiro, no máximo
+        10 000 linhas (`X-Export-Truncated: true` indica corte; refine os filtros). Ordem: `created_at DESC, id ASC`.
+        Leads anonimizados saem com os placeholders e `anonymized_at` preenchido.
+
+        **Formato**: RFC 4180, `text/csv; charset=utf-8`, BOM UTF-8 (compatibilidade com Excel), CRLF, campos com
+        `,` `"` CR ou LF entre aspas (aspas duplicadas). Colunas, nesta ordem: `lead_id`, `created_at`, `first_name`,
+        `last_name`, `email`, `whatsapp`, `company_name`, `area_of_expertise`, `area_of_expertise_other`, `job_title`,
+        `company_size`, `company_website`, `stage`, `lost_reason`, `score`, `score_band`, `owner_user_id`,
+        `marketing_opt_in`, `submissions_count`, `first_submitted_at`, `last_submitted_at`, `anonymized_at`,
+        `first_touch_utm_source`, `first_touch_utm_medium`, `first_touch_utm_campaign`, `last_touch_utm_source`,
+        `last_touch_utm_medium`, `last_touch_utm_campaign`. Datas em ISO 8601 UTC; booleanos `true`/`false`; nulos
+        como célula vazia. Não exporta IP, User-Agent, mensagem, click IDs, `fbp`/`fbc` nem notas.
+
+        **Mitigação de CSV/formula injection** (aplicada a TODA célula de texto, inclusive as que a validação de
+        entrada hoje não deixaria começar assim, como UTMs e o WhatsApp `+55…`): se o primeiro caractere da célula
+        (descartando espaços ASCII à esquerda) for `=`, `+`, `-`, `@`, TAB (U+0009) ou CR (U+000D), a célula é
+        prefixada com `'` (U+0027) antes do quoting — `=1+1` sai como `'=1+1`. Efeito intencional: o WhatsApp
+        sai como `'+5511999990000`; quem processar o arquivo por programa remove o `'` inicial. Células numéricas e
+        booleanas não são alteradas.
+
+        Resposta com `Content-Disposition: attachment` (nome gerado pelo servidor), `Cache-Control: no-store` e
+        `X-Content-Type-Options: nosniff`.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin]
+      x-requires-aal2: true
+      x-max-auth-age-seconds: 300
+      x-rate-limit: { bucket: export, limit: 5, window_seconds: 3600, fail: closed }
+      x-audit-action: lead.exported
+      parameters:
+        - $ref: '#/components/parameters/StageFilter'
+        - $ref: '#/components/parameters/OwnerFilter'
+        - $ref: '#/components/parameters/ScoreBandFilter'
+      responses:
+        '200':
+          description: Arquivo CSV (ver formato e neutralização na descrição da operação)
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+            Content-Disposition:
+              description: Sempre `attachment`; nome de arquivo gerado pelo servidor (`leads-YYYYMMDD.csv`).
+              schema: { type: string, maxLength: 100, pattern: '^attachment; filename="leads-[0-9]{8}\.csv"$' }
+            X-Export-Row-Count:
+              description: Linhas de dados no arquivo (sem o cabeçalho).
+              schema: { type: integer, minimum: 0, maximum: 10000 }
+            X-Export-Truncated:
+              description: "`true` se havia mais linhas que o limite de 10 000."
+              schema: { type: string, enum: ['true', 'false'] }
+          content:
+            text/csv:
+              schema:
+                type: string
+                maxLength: 16777216
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/{id}:
+    parameters:
+      - $ref: '#/components/parameters/LeadId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [crm-leads]
+      operationId: getLead
+      summary: Detalhe do lead com submissões, consentimentos vigentes e atividades
+      description: |
+        Retorna o lead, as 50 submissões mais recentes (sem IP, User-Agent, `fbp`/`fbc` nem click IDs — só o tipo de
+        click ID presente), o consentimento vigente por finalidade e a linha do tempo paginada. Lead inexistente ou
+        de outro workspace → `404 not_found` (nunca 403).
+
+        Atividades: `activities_limit`/`activities_cursor` paginam apenas a linha do tempo
+        (`ORDER BY created_at DESC, id DESC`); o restante do corpo é reenviado a cada página.
+        O texto de notas e de campos vindos do formulário é **não confiável**: a UI deve renderizá-lo sempre como
+        texto (escape), nunca como HTML.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin, sales, viewer]
+      x-rate-limit: { bucket: read, limit: 120, window_seconds: 60, fail: open }
+      parameters:
+        - $ref: '#/components/parameters/ActivitiesLimit'
+        - $ref: '#/components/parameters/ActivitiesCursor'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadDetail'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '404': { $ref: '#/components/responses/StaffNotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/{id}/stage:
+    parameters:
+      - $ref: '#/components/parameters/LeadId'
+      - $ref: '#/components/parameters/RequestId'
+    patch:
+      tags: [crm-leads]
+      operationId: changeLeadStage
+      summary: Muda o estágio do lead (lock otimista por `expected_version`)
+      description: |
+        Máquina de estados de crm §4: `new → contacted | qualified | lost`, `contacted → qualified | lost`,
+        `qualified → proposal | lost`, `proposal → won | lost`, `lost → contacted` (reabrir). `won` é terminal.
+        Qualquer outra transição (inclusive para o mesmo estágio) → `422 invalid_stage_transition`.
+        `to_stage` nunca é `new` (estado inicial). `lost` exige `lost_reason`; informar `lost_reason` com outro
+        destino é erro de validação (`400 validation_failed`: `lost_reason`/`required` | `not_allowed`).
+
+        Autorização: `owner`/`admin` em qualquer lead; `sales` somente em lead seu ou sem dono — nesse segundo
+        caso o lead é atribuído ao próprio `sales` na mesma transação (atividade `owner_assigned`); `viewer` não
+        altera. Reabrir `lost` é só `owner`/`admin` (`sales` → `403 forbidden`).
+
+        Ordem dos conflitos: lead anonimizado → `409 lead_anonymized`; `expected_version` diferente da versão
+        atual → `409 version_conflict` e nada muda (a UI recarrega o lead); transição inválida → `422`.
+        Sucesso: incrementa `version`, grava atividade `stage_changed`, audit `lead.stage_changed` e, para
+        `qualified`/`won`, o evento de outbox `lead.stage_changed` (offline conversions; `event_id` determinístico
+        por lead+estágio, então reenvio não duplica conversão).
+
+        Idempotência: `Idempotency-Key` é recomendado; repetir a mesma chave com o mesmo corpo devolve a resposta
+        original (em vez de `409 version_conflict` após um timeout). Mesma chave com corpo diferente →
+        `422 idempotency_key_reused`.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin, sales]
+      x-role-conditions:
+        sales: lead com owner_user_id igual ao sub do token ou sem dono; não pode reabrir lead lost
+      x-rate-limit: { bucket: write, limit: 30, window_seconds: 60, fail: open }
+      x-idempotency: recommended
+      x-audit-action: lead.stage_changed
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StageChangeRequest'
+      responses:
+        '200':
+          description: Estágio alterado; retorna o lead com a nova `version`
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadSummary'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '404': { $ref: '#/components/responses/StaffNotFound' }
+        '409': { $ref: '#/components/responses/StaffConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StaffUnprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/{id}/owner:
+    parameters:
+      - $ref: '#/components/parameters/LeadId'
+      - $ref: '#/components/parameters/RequestId'
+    patch:
+      tags: [crm-leads]
+      operationId: assignLeadOwner
+      summary: Atribui ou remove o dono (responsável) do lead
+      description: |
+        `owner_user_id = null` remove o dono. O alvo precisa ser membro **ativo do mesmo workspace** (verificado em
+        `core.workspace_members`); caso contrário `400 validation_failed` (`owner_user_id`/`invalid_choice`) —
+        sem distinguir "não existe" de "é de outro workspace". Lock otimista por `expected_version`
+        (`409 version_conflict`); lead anonimizado → `409 lead_anonymized`.
+        Sucesso: incrementa `version`, atividade `owner_assigned`, audit `lead.owner_assigned`.
+        Idempotência recomendada, como em `changeLeadStage`.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin]
+      x-rate-limit: { bucket: write, limit: 30, window_seconds: 60, fail: open }
+      x-idempotency: recommended
+      x-audit-action: lead.owner_assigned
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OwnerChangeRequest'
+      responses:
+        '200':
+          description: Dono alterado; retorna o lead com a nova `version`
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadSummary'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '404': { $ref: '#/components/responses/StaffNotFound' }
+        '409': { $ref: '#/components/responses/StaffConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StaffUnprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/{id}/notes:
+    parameters:
+      - $ref: '#/components/parameters/LeadId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [crm-leads]
+      operationId: addLeadNote
+      summary: Adiciona uma nota à linha do tempo do lead
+      description: |
+        Cria uma atividade imutável `note_added`. `body`: 1–5000 caracteres após o pipeline Unicode de
+        lead-capture §4 (trim, NFC, `\r\n`→`\n`; rejeita controles `\p{Cc}` exceto `\n`, formato `\p{Cf}`/bidi,
+        surrogates soltos e `U+FFFD` → `400 validation_failed`, `body`/`not_allowed_characters`). A nota é texto
+        livre **não confiável** (pode conter marcação HTML/JS): a UI renderiza só como texto. O corpo da requisição também
+        obedece ao limite global de 16 KB (`413 payload_too_large`).
+
+        `Idempotency-Key` obrigatório (criação com efeito colateral): repetir a chave com o mesmo corpo devolve a
+        mesma nota, sem duplicar. Mesma regra de propriedade do estágio: `sales` só em lead seu ou sem dono
+        (a nota NÃO atribui dono). Lead anonimizado → `409 lead_anonymized`. Não altera `version`.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin, sales]
+      x-role-conditions:
+        sales: lead com owner_user_id igual ao sub do token ou sem dono
+      x-rate-limit: { bucket: write, limit: 30, window_seconds: 60, fail: open }
+      x-idempotency: required
+      x-audit-action: lead.note_added
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteCreateRequest'
+      responses:
+        '201':
+          description: Nota criada
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadActivity'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '404': { $ref: '#/components/responses/StaffNotFound' }
+        '409': { $ref: '#/components/responses/StaffConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StaffUnprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/{id}/data-export:
+    parameters:
+      - $ref: '#/components/parameters/LeadId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [crm-privacy]
+      operationId: exportLeadSubjectData
+      summary: Direito de acesso do titular (LGPD) — todos os dados pessoais de um lead em JSON
+      description: |
+        Entrega ao titular (via `owner`/`admin`, após verificação de identidade fora desta API) tudo o que o sistema
+        guarda sobre aquele lead: perfil, submissões (inclusive IP e User-Agent enquanto ainda não expurgados),
+        histórico completo de consentimentos, atribuição completa e linha do tempo (inclusive notas). Exige
+        **AAL2**; papel insuficiente → `403 forbidden`, sem AAL2 → `403 mfa_required`. Somente leitura, mas auditado
+        (`lead.data_exported`, também quando negado) e com cota fail-closed. `Cache-Control: no-store`; o arquivo
+        sai como `Content-Disposition: attachment`.
+
+        Lead de outro workspace ou inexistente → `404`. Lead já anonimizado → `409 lead_anonymized` (não há mais
+        dado pessoal a entregar). Os arrays são limitados (50 submissões, 1 000 atividades); `truncated` indica corte.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin]
+      x-requires-aal2: true
+      x-rate-limit: { bucket: read, limit: 120, window_seconds: 60, fail: closed }
+      x-audit-action: lead.data_exported
+      responses:
+        '200':
+          description: Dados do titular
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+            Content-Disposition:
+              description: Sempre `attachment`; nome de arquivo gerado pelo servidor (sem PII).
+              schema: { type: string, maxLength: 100, pattern: '^attachment; filename="lead-data-export-[0-9a-f-]{36}\.json"$' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadDataExport'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '404': { $ref: '#/components/responses/StaffNotFound' }
+        '409': { $ref: '#/components/responses/StaffConflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
+  /v1/crm/leads/{id}/anonymize:
+    parameters:
+      - $ref: '#/components/parameters/LeadId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [crm-privacy]
+      operationId: anonymizeLead
+      summary: Anonimiza o lead (LGPD) — preview-first, irreversível
+      description: |
+        Dois passos no mesmo endpoint, distinguidos por `confirm`:
+
+        1. **Preview** (`confirm` ausente ou `false`): não altera nada. Devolve `mode = preview` com o que será
+           apagado/mantido, `lead_version`, `plan_hash` e `expires_at` (curto prazo). O `plan_hash` é um MAC do servidor
+           sobre (workspace, lead, `lead_version`, usuário que pediu, ação, validade): não pode ser forjado nem
+           reaproveitado por outro usuário.
+        2. **Aplicação** (`confirm = true` + `plan_hash` do preview): executa `crm.anonymize_lead` (Onda 6b) numa
+           transação, que substitui nome/e-mail/WhatsApp/empresa/site por valores irreversíveis, zera mensagem,
+           campos, click IDs e IP/UA das submissões, grava a atividade `anonymized` e o audit, e mantém IDs, estágio,
+           score, datas e o histórico de consentimento. Devolve `mode = applied`. O e-mail original pode voltar a
+           ser um lead novo (AC-CRM-09).
+
+        Se o lead mudou desde o preview (outra `version`), o plano expirou ou o `plan_hash` não pertence a este
+        usuário/lead → `409 plan_stale` e nada muda (refaça o preview). Lead já anonimizado → `409 lead_anonymized`.
+        `confirm = true` sem `plan_hash` → `400 validation_failed`.
+
+        Segurança: `owner`/`admin` com **AAL2**; a aplicação exige também MFA recente (`x-max-auth-age-seconds`,
+        só quando `confirm = true`) → `403 reauthentication_required`, e o mesmo `plan_hash` segue válido após o
+        step-up, dentro da validade. `Idempotency-Key` é obrigatório quando `confirm = true`
+        (`400 idempotency_key_missing`); sem ele o preview funciona. Cota fail-closed. Auditoria:
+        `lead.anonymize_previewed` e `lead.anonymized` (inclusive negações), sem PII. Dados já enviados a plataformas
+        de anúncio (hash) não podem ser recolhidos por esta operação.
+      security:
+        - staffBearer: []
+      x-roles: [owner, admin]
+      x-requires-aal2: true
+      x-max-auth-age-seconds: 300
+      x-rate-limit: { bucket: write, limit: 30, window_seconds: 60, fail: closed }
+      x-idempotency: required-on-confirm
+      x-audit-action: lead.anonymized
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnonymizeRequest'
+      responses:
+        '200':
+          description: Preview do plano (`mode = preview`) ou anonimização concluída (`mode = applied`)
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnonymizeResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/StaffUnauthorized' }
+        '403': { $ref: '#/components/responses/StaffForbidden' }
+        '404': { $ref: '#/components/responses/StaffNotFound' }
+        '409': { $ref: '#/components/responses/StaffConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StaffUnprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StaffServiceUnavailable' }
+
 components:
   securitySchemes:
     staffBearer:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Access token do Supabase Auth (staff do CRM, wave 9). Verificado via JWKS; iss/aud/exp validados.
+      description: |
+        Access token do Supabase Auth (staff do CRM; `jwt_expiry = 900`), enviado SOMENTE em
+        `Authorization: Bearer` — nunca em query string ou cookie.
+
+        **Autenticação** (qualquer falha → `401 unauthorized` genérico, com `WWW-Authenticate: Bearer` e sem indicar
+        o motivo): assinatura verificada com o JWKS de `SUPABASE_JWKS_URL` (nunca `jku`/`jwk`/`x5u` do header do
+        token), `alg` ∈ {ES256, RS256} fixado no servidor (nunca `none`, HS* ou o `alg` do header), `iss` =
+        `SUPABASE_JWT_ISSUER`, `aud` = `authenticated`, `role` = `authenticated`, `exp`/`nbf` (tolerância ≤ 5 s),
+        `sub` UUID e `is_anonymous` ≠ true. Falha ao obter chaves sem cache válido → `503` (fail-closed).
+
+        **Autorização**: workspace e papel vêm da linha ativa de `core.workspace_members` para o `sub`, lida a cada
+        requisição — nunca de claims (`app_metadata`/`user_metadata`), parâmetro, header ou corpo. Sem membership
+        ativa → `403 forbidden`.
+
+        **AAL2 / MFA** (`x-requires-aal2`): o token precisa ter `aal = aal2` e `amr` com método MFA. A "idade da
+        autenticação" (`x-max-auth-age-seconds`) é o tempo desde a verificação MFA mais recente, lida do
+        `timestamp` da entrada MFA em `amr` (o Supabase não emite `auth_time`). Sem AAL2 → `403 mfa_required`;
+        AAL2 antigo → `403 reauthentication_required` (step-up no Supabase e repetir a chamada).
+
+        **Ordem de avaliação por requisição**: guards de transporte (método, tamanho ≤ 16 KB) → rate limit por IP →
+        autenticação (401) → papel (403 `forbidden`) → AAL2 e idade (403) → validação do `id` e carga do recurso no
+        workspace (400/404) → regra por recurso (403; ex.: `sales` só altera lead seu ou sem dono) → validação do
+        corpo (400) → regra de negócio (409/422). Corpo inválido sem credencial válida responde 401, nunca 400.
     qstashSignature:
       type: apiKey
       in: header
@@ -157,6 +756,66 @@ components:
       in: header
       required: false
       schema: { type: string, format: uuid }
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        UUID por intenção; reutilizar em retentativas (TTL 24 h, escopo: usuário + operação + recurso). Na operação
+        que declara `x-idempotency: required-on-confirm`, é obrigatório quando `confirm = true`
+        (`400 idempotency_key_missing`); nas que declaram `recommended`, repetir a chave com o mesmo corpo devolve
+        a resposta original. Chave em uso → `409 idempotency_in_progress`; mesma chave com corpo diferente →
+        `422 idempotency_key_reused`.
+      schema: { type: string, format: uuid }
+    LeadId:
+      name: id
+      in: path
+      required: true
+      description: UUID do lead. Formato inválido → `400 validation_failed`; lead de outro workspace → `404`.
+      schema: { type: string, format: uuid, maxLength: 36 }
+    StageFilter:
+      name: stage
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/LeadStage' }
+    OwnerFilter:
+      name: owner
+      in: query
+      required: false
+      description: "`me` (leads do próprio usuário), `unassigned` (sem dono) ou o UUID de um membro do workspace."
+      schema:
+        type: string
+        maxLength: 36
+        pattern: '^(me|unassigned|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
+    ScoreBandFilter:
+      name: score_band
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/ScoreBand' }
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Itens por página (1–100; padrão 25).
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    PageCursor:
+      name: cursor
+      in: query
+      required: false
+      description: "`next_cursor` opaco e assinado da página anterior; válido só para o mesmo usuário e filtros."
+      schema: { $ref: '#/components/schemas/Cursor' }
+    ActivitiesLimit:
+      name: activities_limit
+      in: query
+      required: false
+      description: Atividades por página (1–100; padrão 20).
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    ActivitiesCursor:
+      name: activities_cursor
+      in: query
+      required: false
+      description: "`activities.next_cursor` da página anterior de atividades."
+      schema: { $ref: '#/components/schemas/Cursor' }
 
   headers:
     XRequestId:
@@ -165,6 +824,9 @@ components:
     RetryAfter:
       description: Segundos até poder tentar novamente.
       schema: { type: integer, minimum: 1 }
+    WWWAuthenticate:
+      description: Desafio de autenticação (RFC 6750) sem detalhes do motivo da falha.
+      schema: { type: string, const: Bearer }
 
   schemas:
     Name:
@@ -333,11 +995,587 @@ components:
             - internal_error
             - bot_verification_unavailable
             - service_unavailable
+            - forbidden
+            - mfa_required
+            - reauthentication_required
+            - version_conflict
+            - plan_stale
+            - lead_anonymized
+            - invalid_stage_transition
         correlation_id: { type: string, format: uuid }
         errors:
           type: array
           maxItems: 50
           items: { $ref: '#/components/schemas/FieldError' }
+
+    # ---------------------------------------------------------------------------------------------
+    # CRM (Onda 9a) — vocabulários fechados: espelham apps/api/src/modules/crm/domain/lead-types.ts
+    # ---------------------------------------------------------------------------------------------
+    StaffRole:
+      type: string
+      enum: [owner, admin, sales, viewer]
+    LeadStage:
+      type: string
+      enum: [new, contacted, qualified, proposal, won, lost]
+    TargetStage:
+      type: string
+      description: Destinos aceitos em mudança de estágio (`new` é só o estado inicial).
+      enum: [contacted, qualified, proposal, won, lost]
+    LostReason:
+      type: string
+      enum: [no_budget, no_fit, no_response, chose_competitor, timing, invalid_contact, duplicate, other]
+    ScoreBand:
+      type: string
+      enum: [A, B, C]
+    ConsentPurpose:
+      type: string
+      enum: [privacy_policy, marketing_communications, ad_tracking]
+    ActivityType:
+      type: string
+      enum:
+        - submission_received
+        - stage_changed
+        - owner_assigned
+        - note_added
+        - score_changed
+        - insight_generated
+        - conversion_sent
+        - anonymized
+    ActorType:
+      type: string
+      enum: [system, user, ai]
+    ClickIdType:
+      type: string
+      enum: [gclid, gbraid, wbraid, fbclid, ttclid, msclkid]
+    Cursor:
+      type: string
+      description: Cursor opaco e assinado (não interpretar nem montar no cliente).
+      minLength: 1
+      maxLength: 512
+      pattern: '^[A-Za-z0-9_.~-]+$'
+
+    StaffMe:
+      type: object
+      additionalProperties: false
+      required: [user_id, email, role, workspace, aal, mfa_verified_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email, maxLength: 254 }
+        display_name: { type: [string, 'null'], maxLength: 80 }
+        role: { $ref: '#/components/schemas/StaffRole' }
+        workspace:
+          type: object
+          additionalProperties: false
+          required: [id, name]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, maxLength: 120 }
+        aal:
+          type: string
+          enum: [aal1, aal2]
+          description: Nível de garantia de autenticação do token atual.
+        mfa_verified_at:
+          type: [string, 'null']
+          format: date-time
+          description: Última verificação MFA (do `amr` do token); `null` se o token não tem MFA.
+      example:
+        user_id: 0194f1c2-7a3b-7c11-8f00-5b6f4e1d2a10
+        email: vendedora@empresa.com.br
+        display_name: Marina Souza
+        role: sales
+        workspace: { id: 0194f1c2-0000-7000-8000-000000000001, name: Empresa }
+        aal: aal1
+        mfa_verified_at: null
+
+    StaffMember:
+      type: object
+      additionalProperties: false
+      required: [user_id, role, active]
+      properties:
+        user_id: { type: string, format: uuid }
+        display_name: { type: [string, 'null'], maxLength: 80 }
+        role: { $ref: '#/components/schemas/StaffRole' }
+        active: { type: boolean }
+    StaffMemberList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/StaffMember' }
+
+    LeadSummaryFields:
+      type: object
+      description: Campos comuns a `LeadSummary` e `LeadProfile` (não usar isolado).
+      required:
+        - id
+        - first_name
+        - last_name
+        - email
+        - company_name
+        - area_of_expertise
+        - stage
+        - score
+        - score_band
+        - submissions_count
+        - first_submitted_at
+        - last_submitted_at
+        - created_at
+        - updated_at
+        - version
+      properties:
+        id: { type: string, format: uuid }
+        first_name: { type: string, maxLength: 60 }
+        last_name: { type: string, maxLength: 80 }
+        email: { type: string, maxLength: 254 }
+        company_name: { type: string, maxLength: 120 }
+        job_title: { type: [string, 'null'], maxLength: 100 }
+        area_of_expertise: { $ref: '#/components/schemas/AreaOfExpertise' }
+        company_size:
+          oneOf:
+            - { $ref: '#/components/schemas/CompanySize' }
+            - { type: 'null' }
+        stage: { $ref: '#/components/schemas/LeadStage' }
+        lost_reason:
+          oneOf:
+            - { $ref: '#/components/schemas/LostReason' }
+            - { type: 'null' }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        score_band: { $ref: '#/components/schemas/ScoreBand' }
+        owner_user_id: { type: [string, 'null'], format: uuid }
+        submissions_count: { type: integer, minimum: 1 }
+        first_submitted_at: { type: string, format: date-time }
+        last_submitted_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        anonymized_at: { type: [string, 'null'], format: date-time }
+        version:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Lock otimista; enviar como `expected_version` nas mutações.
+
+    LeadSummary:
+      description: Lead como aparece em listas e como resposta das mutações.
+      allOf:
+        - $ref: '#/components/schemas/LeadSummaryFields'
+      unevaluatedProperties: false
+      example:
+        id: 0194f1c2-7a3b-7c11-8f00-5b6f4e1d2a10
+        first_name: Carla
+        last_name: Menezes
+        email: carla@acme.com.br
+        company_name: Acme Ltda
+        job_title: Diretora Comercial
+        area_of_expertise: technology
+        company_size: '51_200'
+        stage: new
+        lost_reason: null
+        score: 85
+        score_band: A
+        owner_user_id: null
+        submissions_count: 1
+        first_submitted_at: '2026-11-03T14:00:00Z'
+        last_submitted_at: '2026-11-03T14:00:00Z'
+        created_at: '2026-11-03T14:00:00Z'
+        updated_at: '2026-11-03T14:00:00Z'
+        anonymized_at: null
+        version: 1
+
+    ScoreContribution:
+      type: object
+      additionalProperties: false
+      required: [rule_id, points]
+      properties:
+        rule_id: { type: string, maxLength: 64 }
+        points: { type: integer, minimum: -100, maximum: 100 }
+
+    LeadProfile:
+      description: Lead completo (detalhe e exportação do titular).
+      allOf:
+        - $ref: '#/components/schemas/LeadSummaryFields'
+        - type: object
+          required: [whatsapp, marketing_opt_in, score_breakdown]
+          properties:
+            whatsapp: { type: string, maxLength: 32, description: E.164 normalizado. }
+            area_of_expertise_other: { type: [string, 'null'], maxLength: 80 }
+            company_website: { type: [string, 'null'], maxLength: 200 }
+            marketing_opt_in: { type: boolean }
+            score_breakdown:
+              type: array
+              maxItems: 20
+              description: Regras que compuseram o score (explicabilidade, crm §5).
+              items: { $ref: '#/components/schemas/ScoreContribution' }
+      unevaluatedProperties: false
+
+    AttributionSummary:
+      type: object
+      description: >-
+        Atribuição para o vendedor. Sem identificadores de rastreamento (`fbp`, `fbc`, `ga_client_id`) e sem o
+        valor dos click IDs — só quais tipos estavam presentes.
+      additionalProperties: false
+      properties:
+        utm_source: { $ref: '#/components/schemas/UtmValue' }
+        utm_medium: { $ref: '#/components/schemas/UtmValue' }
+        utm_campaign: { $ref: '#/components/schemas/UtmValue' }
+        utm_term: { $ref: '#/components/schemas/UtmValue' }
+        utm_content: { $ref: '#/components/schemas/UtmValue' }
+        utm_id: { $ref: '#/components/schemas/UtmValue' }
+        landing_page_url: { $ref: '#/components/schemas/HttpUrl' }
+        referrer_url: { $ref: '#/components/schemas/HttpUrl' }
+        click_id_types:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ClickIdType' }
+
+    AttributionFull:
+      type: object
+      description: Atribuição completa, apenas na exportação do titular (direito de acesso).
+      additionalProperties: false
+      properties:
+        utm_source: { $ref: '#/components/schemas/UtmValue' }
+        utm_medium: { $ref: '#/components/schemas/UtmValue' }
+        utm_campaign: { $ref: '#/components/schemas/UtmValue' }
+        utm_term: { $ref: '#/components/schemas/UtmValue' }
+        utm_content: { $ref: '#/components/schemas/UtmValue' }
+        utm_id: { $ref: '#/components/schemas/UtmValue' }
+        gclid: { $ref: '#/components/schemas/ClickId' }
+        gbraid: { $ref: '#/components/schemas/ClickId' }
+        wbraid: { $ref: '#/components/schemas/ClickId' }
+        fbclid: { $ref: '#/components/schemas/ClickId' }
+        ttclid: { $ref: '#/components/schemas/ClickId' }
+        msclkid: { $ref: '#/components/schemas/ClickId' }
+        fbp: { type: [string, 'null'], maxLength: 500 }
+        fbc: { type: [string, 'null'], maxLength: 500 }
+        ga_client_id: { type: [string, 'null'], maxLength: 100 }
+        landing_page_url: { $ref: '#/components/schemas/HttpUrl' }
+        referrer_url: { $ref: '#/components/schemas/HttpUrl' }
+
+    ConsentState:
+      type: object
+      additionalProperties: false
+      properties:
+        analytics_storage: { $ref: '#/components/schemas/ConsentValue' }
+        ad_storage: { $ref: '#/components/schemas/ConsentValue' }
+        ad_user_data: { $ref: '#/components/schemas/ConsentValue' }
+        ad_personalization: { $ref: '#/components/schemas/ConsentValue' }
+
+    SubmissionFields:
+      type: object
+      description: Snapshot normalizado dos campos do formulário naquela submissão.
+      additionalProperties: false
+      properties:
+        first_name: { type: string, maxLength: 60 }
+        last_name: { type: string, maxLength: 80 }
+        email: { type: string, maxLength: 254 }
+        whatsapp: { type: string, maxLength: 32 }
+        company: { type: string, maxLength: 120 }
+        area_of_expertise: { $ref: '#/components/schemas/AreaOfExpertise' }
+        area_of_expertise_other: { type: [string, 'null'], maxLength: 80 }
+        job_title: { type: [string, 'null'], maxLength: 100 }
+        company_size:
+          oneOf:
+            - { $ref: '#/components/schemas/CompanySize' }
+            - { type: 'null' }
+        company_website: { type: [string, 'null'], maxLength: 200 }
+        marketing_opt_in: { type: boolean }
+
+    Submission:
+      type: object
+      description: Submissão como o vendedor a vê (sem IP, User-Agent nem identificadores de rastreamento).
+      additionalProperties: false
+      required: [id, created_at, fields]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        fields: { $ref: '#/components/schemas/SubmissionFields' }
+        message:
+          type: [string, 'null']
+          maxLength: 1000
+          description: Texto livre do visitante — não confiável; renderizar só como texto.
+        attribution: { $ref: '#/components/schemas/AttributionSummary' }
+        consent_state: { $ref: '#/components/schemas/ConsentState' }
+
+    ConsentRecord:
+      type: object
+      additionalProperties: false
+      required: [purpose, granted, policy_version, recorded_at]
+      properties:
+        purpose: { $ref: '#/components/schemas/ConsentPurpose' }
+        granted: { type: boolean }
+        policy_version: { type: string, maxLength: 20 }
+        recorded_at: { type: string, format: date-time }
+
+    ActivityData:
+      type: object
+      description: >-
+        Carga da atividade; as chaves presentes dependem de `type`. `submission_received`: `submission_id`.
+        `stage_changed`: `from_stage`, `to_stage`, `lost_reason?`. `owner_assigned`: `from_owner_user_id`,
+        `to_owner_user_id`. `note_added`: `body` (texto não confiável). `score_changed`: `from_score`, `to_score`,
+        `from_band`, `to_band`. `conversion_sent`: `destination`. `insight_generated`: `insight_id` (Onda 11).
+        `anonymized`: vazio. Chaves novas podem surgir de forma aditiva.
+      additionalProperties: false
+      properties:
+        submission_id: { type: string, format: uuid }
+        from_stage: { $ref: '#/components/schemas/LeadStage' }
+        to_stage: { $ref: '#/components/schemas/LeadStage' }
+        lost_reason: { $ref: '#/components/schemas/LostReason' }
+        from_owner_user_id: { type: [string, 'null'], format: uuid }
+        to_owner_user_id: { type: [string, 'null'], format: uuid }
+        body: { type: string, maxLength: 5000 }
+        from_score: { type: integer, minimum: 0, maximum: 100 }
+        to_score: { type: integer, minimum: 0, maximum: 100 }
+        from_band: { $ref: '#/components/schemas/ScoreBand' }
+        to_band: { $ref: '#/components/schemas/ScoreBand' }
+        destination: { type: string, enum: [meta_capi, ga4_mp, google_ads] }
+        insight_id: { type: string, format: uuid }
+
+    LeadActivity:
+      type: object
+      description: Fato imutável na linha do tempo do lead.
+      additionalProperties: false
+      required: [id, type, actor_type, created_at, data]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/ActivityType' }
+        actor_type: { $ref: '#/components/schemas/ActorType' }
+        actor_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+        data: { $ref: '#/components/schemas/ActivityData' }
+
+    ActivityPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/LeadActivity' }
+        next_cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/Cursor' }
+            - { type: 'null' }
+
+    LeadDetail:
+      type: object
+      additionalProperties: false
+      required: [lead, first_touch, last_touch, submissions, consents, activities]
+      properties:
+        lead: { $ref: '#/components/schemas/LeadProfile' }
+        first_touch: { $ref: '#/components/schemas/AttributionSummary' }
+        last_touch: { $ref: '#/components/schemas/AttributionSummary' }
+        submissions:
+          type: array
+          maxItems: 50
+          description: As 50 mais recentes (`created_at DESC`); o total está em `lead.submissions_count`.
+          items: { $ref: '#/components/schemas/Submission' }
+        consents:
+          type: array
+          maxItems: 3
+          description: Consentimento vigente (o mais recente) por finalidade.
+          items: { $ref: '#/components/schemas/ConsentRecord' }
+        activities: { $ref: '#/components/schemas/ActivityPage' }
+
+    LeadPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/LeadSummary' }
+        next_cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/Cursor' }
+            - { type: 'null' }
+
+    LeadSearchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        q:
+          type: string
+          minLength: 2
+          maxLength: 80
+          description: Prefixo de nome, sobrenome, empresa ou e-mail (case-insensitive).
+        stage: { $ref: '#/components/schemas/LeadStage' }
+        owner:
+          type: string
+          maxLength: 36
+          pattern: '^(me|unassigned|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
+          description: "`me`, `unassigned` ou UUID de membro do workspace."
+        score_band: { $ref: '#/components/schemas/ScoreBand' }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        cursor: { $ref: '#/components/schemas/Cursor' }
+
+    StageChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [to_stage, expected_version]
+      properties:
+        to_stage: { $ref: '#/components/schemas/TargetStage' }
+        lost_reason:
+          allOf: [{ $ref: '#/components/schemas/LostReason' }]
+          description: Obrigatório se `to_stage = lost`; proibido caso contrário.
+        expected_version: { type: integer, minimum: 1, maximum: 2147483647 }
+
+    OwnerChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [owner_user_id, expected_version]
+      properties:
+        owner_user_id:
+          type: [string, 'null']
+          format: uuid
+          maxLength: 36
+          description: Membro ativo do workspace, ou `null` para remover o dono.
+        expected_version: { type: integer, minimum: 1, maximum: 2147483647 }
+
+    NoteCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 5000
+          description: Texto livre após o pipeline Unicode (contado em code points). Não confiável.
+
+    AnonymizePreviewRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        confirm: { type: boolean, const: false, default: false }
+    AnonymizeApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [confirm, plan_hash]
+      properties:
+        confirm: { type: boolean, const: true }
+        plan_hash:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: "`plan_hash` devolvido pelo preview deste mesmo lead e usuário (base64url de 32 bytes)."
+    AnonymizeRequest:
+      description: "`{}` ou `{confirm:false}` → preview; `{confirm:true, plan_hash}` → aplica."
+      oneOf:
+        - $ref: '#/components/schemas/AnonymizePreviewRequest'
+        - $ref: '#/components/schemas/AnonymizeApplyRequest'
+
+    ErasureItem:
+      type: object
+      additionalProperties: false
+      required: [category, count]
+      properties:
+        category:
+          type: string
+          enum:
+            - lead_contact_fields
+            - lead_company_fields
+            - attribution_snapshots
+            - submission_fields
+            - submission_messages
+            - submission_tracking_identifiers
+            - submission_ip_and_user_agent
+            - activity_notes
+        count: { type: integer, minimum: 0 }
+    AnonymizePreview:
+      type: object
+      additionalProperties: false
+      required: [mode, lead_id, lead_version, plan_hash, expires_at, will_erase, will_keep]
+      properties:
+        mode: { type: string, const: preview }
+        lead_id: { type: string, format: uuid }
+        lead_version: { type: integer, minimum: 1, maximum: 2147483647 }
+        plan_hash: { type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$' }
+        expires_at: { type: string, format: date-time }
+        will_erase:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/ErasureItem' }
+        will_keep:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            enum: [identifiers, stage_and_score, timestamps, consent_history, audit_trail]
+    AnonymizeApplied:
+      type: object
+      additionalProperties: false
+      required: [mode, lead_id, anonymized_at, version]
+      properties:
+        mode: { type: string, const: applied }
+        lead_id: { type: string, format: uuid }
+        anonymized_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1, maximum: 2147483647 }
+    AnonymizeResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AnonymizePreview'
+        - $ref: '#/components/schemas/AnonymizeApplied'
+      discriminator:
+        propertyName: mode
+        mapping:
+          preview: '#/components/schemas/AnonymizePreview'
+          applied: '#/components/schemas/AnonymizeApplied'
+
+    DataExportSubmission:
+      type: object
+      description: Submissão completa para o titular (inclui IP e User-Agent enquanto não expurgados — database §6).
+      additionalProperties: false
+      required: [id, created_at, fields, tracking, consent_state]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        fields: { $ref: '#/components/schemas/SubmissionFields' }
+        message: { type: [string, 'null'], maxLength: 1000 }
+        tracking: { $ref: '#/components/schemas/AttributionFull' }
+        consent_state: { $ref: '#/components/schemas/ConsentState' }
+        client_ip: { type: [string, 'null'], maxLength: 45, description: "`null` após o expurgo de 30 dias." }
+        user_agent: { type: [string, 'null'], maxLength: 512, description: "`null` após o expurgo de 30 dias." }
+
+    LeadDataExport:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - exported_at
+        - truncated
+        - lead
+        - first_touch
+        - last_touch
+        - submissions
+        - consents
+        - activities
+      properties:
+        schema_version: { type: string, const: '1' }
+        exported_at: { type: string, format: date-time }
+        truncated:
+          type: boolean
+          description: "`true` se `submissions` (50) ou `activities` (1 000) foram cortados."
+        lead: { $ref: '#/components/schemas/LeadProfile' }
+        first_touch: { $ref: '#/components/schemas/AttributionFull' }
+        last_touch: { $ref: '#/components/schemas/AttributionFull' }
+        submissions:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/DataExportSubmission' }
+        consents:
+          type: array
+          maxItems: 200
+          description: Histórico completo (append-only), do mais recente ao mais antigo.
+          items: { $ref: '#/components/schemas/ConsentRecord' }
+        activities:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/LeadActivity' }
 
   responses:
     BadRequest:
@@ -374,5 +1612,40 @@ components:
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ServiceUnavailable:
       description: bot_verification_unavailable | service_unavailable
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+
+    # CRM (Onda 9a) — respostas de erro do staff. Corpo sempre `Problem` (sem eco de valores recebidos).
+    StaffUnauthorized:
+      description: >-
+        `unauthorized` — token ausente, malformado, expirado, com `alg`/`iss`/`aud` inválidos ou conta anônima.
+        Mensagem genérica; nunca diz qual verificação falhou.
+      headers:
+        WWW-Authenticate: { $ref: '#/components/headers/WWWAuthenticate' }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    StaffForbidden:
+      description: >-
+        `forbidden` (sem membership ativa, papel insuficiente, ou regra por recurso como `sales` em lead de outro dono)
+        | `mfa_required` (exige AAL2) | `reauthentication_required` (MFA verificado há mais que o permitido).
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    StaffNotFound:
+      description: >-
+        `not_found` — lead inexistente OU de outro workspace (indistinguíveis; nunca 403).
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    StaffConflict:
+      description: >-
+        `version_conflict` (`expected_version` desatualizada; nada mudou) | `plan_stale` (anonimização: lead mudou,
+        plano expirado ou de outro usuário) | `lead_anonymized` | `idempotency_in_progress` (com `Retry-After`).
+      headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    StaffUnprocessable:
+      description: >-
+        `invalid_stage_transition` (transição fora do diagrama de crm §4) | `idempotency_key_reused` (mesma chave,
+        corpo diferente).
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    StaffServiceUnavailable:
+      description: >-
+        `service_unavailable` — banco ou JWKS indisponível sem cache válido, ou limitador de cota indisponível em
+        rota fail-closed. Falha fechada: a requisição não é atendida.
       headers: { Retry-After: { $ref: '#/components/headers/RetryAfter' } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
