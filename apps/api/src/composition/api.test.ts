@@ -71,7 +71,7 @@ describe('composeApiRoutes', () => {
     expect(routes.some((route) => route.includes('/v1/crm/'))).toBe(false);
   });
 
-  it('mounts the CRM staff and read routes when the identity provider is configured', () => {
+  it('mounts every CRM route group when the identity provider is configured', () => {
     // act
     const routes = mountedRoutes({ ...DEV_ENV, ...LEAD_CAPTURE_ENV, ...CRM_ENV });
     // assert
@@ -81,6 +81,9 @@ describe('composeApiRoutes', () => {
         'GET /v1/crm/members',
         'GET /v1/crm/leads',
         'POST /v1/crm/leads/search',
+        'PATCH /v1/crm/leads/:id/stage',
+        'POST /v1/crm/leads/:id/anonymize',
+        'GET /v1/crm/leads/export.csv',
       ]),
     );
   });
