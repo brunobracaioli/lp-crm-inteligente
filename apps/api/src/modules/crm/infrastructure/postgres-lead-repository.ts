@@ -170,6 +170,14 @@ function toLeadState(row: z.infer<typeof leadRowSchema>): LeadState {
 }
 
 /**
+ * Maps a raw `crm.leads` row (every persisted column) to the aggregate state. Exposed so the
+ * read-by-id adapter of the staff commands shares the one parsing definition of the table.
+ */
+export function leadStateFromRow(row: object): LeadState {
+  return toLeadState(leadRowSchema.parse(row));
+}
+
+/**
  * `crm.leads` (Lead aggregate). Race safety comes from the partial unique index
  * `(workspace_id, email) WHERE anonymized_at IS NULL`; concurrency on one lead from the row lock
  * (`FOR UPDATE`) plus the optimistic `version` check.
