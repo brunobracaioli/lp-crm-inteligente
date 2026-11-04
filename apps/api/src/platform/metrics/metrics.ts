@@ -10,6 +10,7 @@ export type MetricName =
   | 'outbox.lag_s'
   | 'delivery.result'
   | 'auth.qstash_signature_invalid'
+  | 'auth.staff_rejected'
   | 'ai.cost_usd';
 
 /** Attribute values must be low-cardinality codes (never IDs, never PII). */
