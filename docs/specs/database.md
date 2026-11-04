@@ -169,10 +169,36 @@ de resposta do terceiro), `external_ref text NULL` (ex.: `fbtrace_id`), `created
 `resource_type`, `resource_id uuid`, `result text CHECK IN ('success','denied','error')`,
 `correlation_id uuid`, `metadata jsonb` (sem PII). Índice `(workspace_id, occurred_at DESC)`.
 
-### 3.10 `core.workspace_members` (wave 9)
+### 3.10 `core.workspace_members` (wave 9b — migration `20261104110000_workspace_members.sql`)
 
-`workspace_id`, `user_id uuid` (→ `auth.users.id`), `role text CHECK IN
-('owner','admin','sales','viewer')`, `active boolean`, `created_at`. PK `(workspace_id, user_id)`.
+| Coluna | Tipo | Regras |
+|---|---|---|
+| `workspace_id` | `uuid` | FK → `core.workspaces(id)`; PK `(workspace_id, user_id)` |
+| `user_id` | `uuid` | `sub` do token Supabase (`auth.users.id`). Referência **lógica**, sem FK (mesma decisão de `crm.leads.owner_user_id`: a migration aplica em Postgres puro) |
+| `display_name` | `text` | `NOT NULL`, `CHECK (char_length BETWEEN 1 AND 80)`, sem controles/zero-width/bidi/BOM, sem espaços nas pontas (G2: nome para escolher e mostrar o dono do lead; nunca e-mail) |
+| `role` | `text` | `CHECK IN ('owner','admin','sales','viewer')` |
+| `active` | `boolean` | default `true`; desativar corta o acesso na próxima requisição (a membership é relida a cada chamada) |
+| `created_at` | `timestamptz` | default `now()` |
+
+Índice parcial `(user_id) WHERE active` para o lookup do token. A tabela é provisionada **fora da API** (migration, seed,
+console do dono): não existe rota para criar usuário, mudar papel ou (des)ativar membro.
+
+**Resolução da membership antes de existir workspace.** O `sub` do token é conhecido, o workspace ainda não. Em vez de um
+`SELECT` amplo ou de uma função `SECURITY DEFINER`, a transação do lookup define um segundo setting local
+(`set_config('app.staff_user_id', <sub>, true)`, lido por `core.current_staff_user_id()`) e a policy de `SELECT` tem dois ramos:
+
+```sql
+USING (
+  workspace_id = (SELECT core.current_workspace_id())               -- GET /v1/crm/members e checagens de dono
+  OR (active AND user_id = (SELECT core.current_staff_user_id()))   -- lookup do próprio usuário (só linhas ativas)
+)
+```
+
+Sem nenhum dos settings a policy não casa linha alguma. O ramo por usuário só alcança linhas **ativas** do próprio `sub`
+(em qualquer workspace, que é o propósito); linhas inativas e membros de outros usuários continuam invisíveis. Função
+`SECURITY DEFINER` foi descartada: receberia o mesmo id por argumento (nenhuma proteção a mais contra uma API
+comprometida) e criaria um objeto privilegiado a auditar para sempre. Se um usuário tiver mais de uma membership ativa
+(v1 tem um workspace), a API falha fechada com `403` — questão aberta para o dono.
 
 ## 4. Roles e grants
 
@@ -190,6 +216,7 @@ GRANT USAGE ON SCHEMA core, crm, capture, tracking TO lp_api;
 | Tabela | `lp_api` |
 |---|---|
 | `core.workspaces` | `SELECT` |
+| `core.workspace_members` | `SELECT` (somente leitura; ver §3.10) |
 | `core.forms` | `SELECT` (política: `status = 'active'`, sem filtro de workspace — lookup por `form_key` é roteamento público) |
 | `crm.leads` | `SELECT`, `INSERT`, `UPDATE` |
 | `capture.submissions` | `SELECT`, `INSERT`, `UPDATE (client_ip, user_agent, pii_purged_at)` |
@@ -215,7 +242,8 @@ Nenhum `DELETE`/`TRUNCATE`/DDL. Expurgo e anonimização em massa rodam como fun
 - Todas as tabelas com `workspace_id`: `USING/WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid)` para `lp_api`.
 - `current_setting` ausente → `NULL` → nenhuma linha (deny by default).
 - Wave 9: políticas para staff são aplicadas na aplicação (authz) **e** no banco, com o
-  workspace definido a partir da membership do usuário autenticado, nunca de parâmetro.
+  workspace definido a partir da membership do usuário autenticado, nunca de parâmetro. A única exceção de
+  chave de RLS é `core.workspace_members` (§3.10): o lookup da membership usa `app.staff_user_id`, o `sub` verificado.
 
 ## 6. Retenção e expurgo
 
@@ -288,3 +316,4 @@ próxima execução) e retornam quantas linhas trataram. Os jobs ficam em `cron.
 | AC-DB-13 | Leads não `won` sem atividade há 24 meses são anonimizados entre workspaces; `won`, recentes e com atividade recente ficam (`007_retention`) |
 | AC-DB-14 | `crm.anonymize_lead`: `true`/`false` conforme o contrato, outro workspace → `false` sem alterar nada, apaga lead/atribuição/submissões/notas/payloads, mantém IDs/estágio/score/datas/consentimentos, uma atividade `anonymized` (`008_anonymize_lead`) |
 | AC-DB-15 | `lp_api` executa só `crm.anonymize_lead`; nenhuma função de expurgo nem a `unchecked`; `anon`/`authenticated`/`service_role` nenhuma; todas `SECURITY DEFINER` com `search_path = ''`; os quatro jobs `lp-retention-*` agendados no `pg_cron` (`007_retention`) |
+| AC-DB-16 | `core.workspace_members`: RLS `ENABLE`+`FORCE`; `lp_api` só `SELECT`; `anon`/`authenticated` sem acesso; sem setting a tabela é vazia; o lookup por usuário só vê a linha ativa do próprio `sub`; workspace A não vê membros de B (`supabase/tests/009_workspace_members.test.sql`, espelhado em `apps/api/test/integration/staff-membership.test.ts`) |

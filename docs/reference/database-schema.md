@@ -73,6 +73,7 @@ pooler, o setting volta como `''` (não `NULL`) depois do commit e `''::uuid` la
 |---|---|
 | `core.workspaces` | `SELECT` onde `id = core.current_workspace_id()` |
 | `core.forms` | `SELECT` onde `status = 'active'` — **sem filtro de workspace** (roteamento público por `form_key`) |
+| `core.workspace_members` (9b) | `SELECT` onde `workspace_id = core.current_workspace_id()` **ou** (`active` e `user_id = core.current_staff_user_id()`, setting `app.staff_user_id`, só no lookup de membership) |
 | `crm.leads`, `capture.submissions`, `tracking.outbox_events`, `tracking.deliveries` | `SELECT`, `INSERT` (`WITH CHECK`), `UPDATE` (`USING` + `WITH CHECK`) por `workspace_id` |
 | `capture.consents`, `crm.lead_activities`, `core.audit_log` | `SELECT`, `INSERT` (`WITH CHECK`) por `workspace_id` |
 
@@ -93,6 +94,22 @@ Convenções: `uuid` v7 gerado pela aplicação (sem default); `timestamptz`; to
 | `name` | text | não | 1–120 |
 | `settings` | jsonb | não | `'{}'`; objeto JSON (ICP e pesos do score, validado por Zod na app) |
 | `created_at`, `updated_at` | timestamptz | não | `now()`; `updated_at` por trigger |
+
+### `core.workspace_members` (wave 9b)
+
+Migration `20261104110000_workspace_members.sql`. Detalhes e justificativa do desenho em
+[database §3.10](../specs/database.md#310-coreworkspace_members-wave-9b--migration-20261104110000_workspace_memberssql).
+
+| Coluna | Tipo | Null | Default / regra |
+|---|---|---|---|
+| `workspace_id` | uuid | não | PK (com `user_id`); FK → `core.workspaces(id)` |
+| `user_id` | uuid | não | `sub` do token; referência lógica a `auth.users`, sem FK |
+| `display_name` | text | não | 1–80, sem controles/zero-width/bidi, sem espaços nas pontas |
+| `role` | text | não | `owner`, `admin`, `sales`, `viewer` |
+| `active` | boolean | não | `true` |
+| `created_at` | timestamptz | não | `now()` |
+
+`lp_api` só tem `SELECT`; a tabela é provisionada fora da API. Índice parcial `(user_id) WHERE active`.
 
 ### `core.forms`
 

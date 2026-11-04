@@ -38,11 +38,32 @@
   `action: test`, que o adapter recusa: o preview usa chaves reais com o hostname do preview (recomendado) ou um
   modo de teste explícito? Para a 6b: N3 (cota por form antes do Turnstile), N5 (prazo total vs `maxDuration`),
   N10 (headers em respostas geradas pela plataforma via `vercel.json`).
-- Pendências que continuam para a **9b**: 7 códigos novos do draft.3 em `platform/errors/problem.ts`; CORS separado
-  para o CRM web.
-- Pendências para **5b / 6b**: `gaClientId` no port de tracking e flag `GA4_MP_ENABLED`; sweeper recebe o
-  `workspace_id` (o `lp_api` não enumera workspaces); expurgo de 12 meses do `core.audit_log` conflita com o trigger
-  append-only (ADR na 6b); `crm.anonymize_lead` deve cobrir notas, `first_touch`/`last_touch` e `crm.lead_insights`.
+- 2026-11-04 — **Onda 6b** 🟡 (branch `feat/wave-6b-ops`, sobre a 6a): migration
+  `20261104100000_retention_and_anonymization.sql` (expurgos 30 d / 90 d / 12 meses e anonimização de inativos
+  24 meses via `pg_cron`; `crm.anonymize_lead` com assinatura congelada, só `lp_api` executa; exceções ao
+  append-only por trigger por operação + flag local, ADR-0009); Firewall e monitores como código
+  (`apps/api/ops/vercel/`, `scripts/vercel-ops.ts` só imprime comandos); harness sem Docker
+  (`scripts/local-db/throwaway-postgres.sh`, stub de `pg_cron`). Falta para ✅: `supabase test db` (pgTAP real,
+  precisa de Docker), k6 e ZAP no preview, publicar Firewall e monitores (ação externa) e teste sintético de alerta.
+- 2026-11-04 — **Onda 9b** 🟡 (branch `feat/wave-9b-crm-api`, sobre a 6b): todas as rotas `/v1/crm/*` do contrato,
+  ligadas no composition root e montadas só com `SUPABASE_URL` + Upstash + `HASH_PEPPER` + banco (fail-closed).
+  Staff auth (JWKS do Supabase, ES256/RS256, membership em `core.workspace_members` com RLS por `app.staff_user_id`),
+  limites por usuário, CORS próprio do CRM web, leitura com cursor assinado, escrita com locking otimista e
+  idempotência, export CSV com neutralização, data-export e anonimização preview-first. Contrato `1.0.0-draft.6`.
+  1696 testes unitários/contrato; integração 172/172 (Postgres 18 com as três migrations). Falta para ✅: login
+  real no Supabase do preview (token ES256/RS256 + TOTP) e o primeiro membro provisionado.
+  **Para o dono:** chaves de assinatura assimétricas no Supabase Auth (com HS256 todo token é recusado);
+  `.env.example` ganha `CRM_WEB_ORIGINS` e perde `SUPABASE_JWT_ISSUER`/`SUPABASE_JWKS_URL` (derivados de
+  `SUPABASE_URL`); confirmar que o `postgres` do projeto tem `BYPASSRLS` (a migration aborta se não tiver);
+  `utm_term`/`utm_content` sobrevivem à anonimização?; usuário com mais de um workspace hoje recebe 403;
+  `data-export` exige AAL2 mas não MFA recente (igual ao contrato) — apertar para 300 s?
+- Pendências técnicas da 9b para depois: alinhar as chaves de `ActivityData` do escritor (`from`/`to`,
+  `previous_owner_id`/`owner_id`) com o contrato (`from_stage`/`to_stage`…; o leitor aceita as duas); evento
+  `lead.stage_changed` no outbox fica desligado até o tracking despachá-lo (11b); métrica `crm.rows_read` (G11);
+  índices de busca por prefixo (`lower(email) text_pattern_ops` etc.); `delivery.result` é emitida duas vezes
+  (cliente e telemetria, atributos diferentes).
+- Pendências para **5b**: `gaClientId` no port de tracking; sweeper recebe o `workspace_id` (o `lp_api` não enumera
+  workspaces).
 - Decisões do dono pendentes (detalhe nos threat models `crm-staff-auth.md` G1–G19 e `intelligence.md` G1–G14):
   normalização de nome para a Meta (spec diz "sem acento", vetor oficial mantém acento — seguido o da Meta);
   UTM/click id malformado → 400 (spec) ou descartar o campo; revisar rótulos do eval set (11a) antes da 11b;
@@ -64,13 +85,13 @@
 | 5a | Tracking isolado (domínio, CAPI client, assinatura QStash) | ✅ |
 | 5b | Tracking wiring (outbox, rotas internas, sweeper) | 🟡 código pronto; falta preview |
 | 6a | Hardening sem conflito (runbooks, k6, ZAP) | ✅ |
-| 6b | Hardening & operação (retenção, `anonymize_lead`, Firewall, alertas) | 🟡 Firewall e alertas como código prontos (`feat/wave-6b-ops`); migration de retenção em andamento; k6/ZAP dependem do preview |
+| 6b | Hardening & operação (retenção, `anonymize_lead`, Firewall, alertas) | 🟡 código pronto; falta pgTAP real, k6/ZAP no preview e publicar Firewall/monitores |
 | 7a | LP contra mock (Codex) | ⬜ |
 | 7b | LP integrada ao preview (Codex) | ⬜ |
 | 8a | Container GTM sem publicar | ⬜ |
 | 8b | Publicação GTM + QA headless | ⬜ |
 | 9a | Contrato `/v1/crm/*` + threat model staff | ✅ |
-| 9b | CRM API | 🟡 em andamento (auth do staff, rotas de leitura, escrita e LGPD em paralelo) |
+| 9b | CRM API | 🟡 código pronto; falta login real no Supabase do preview |
 | 10 | CRM web (Codex) | ⬜ |
 | 11a | Preparação IA (eval set, threat model LLM) | ✅ |
 | 11b | Inteligência (IA, automações, offline conversions) | ⬜ |

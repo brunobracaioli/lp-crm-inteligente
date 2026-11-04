@@ -75,6 +75,8 @@ const MAX_FIELD_ERRORS = 50;
 export interface HttpProblemOptions {
   readonly errors?: readonly FieldError[];
   readonly retryAfterSeconds?: number;
+  /** Extra response headers fixed by the contract (e.g. `WWW-Authenticate: Bearer` on staff 401). */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -86,6 +88,7 @@ export class HttpProblem extends Error {
   readonly code: ProblemCode;
   readonly errors: readonly FieldError[] | undefined;
   readonly retryAfterSeconds: number | undefined;
+  readonly headers: Readonly<Record<string, string>> | undefined;
 
   constructor(status: ContentfulStatusCode, code: ProblemCode, options: HttpProblemOptions = {}) {
     super(code);
@@ -94,6 +97,7 @@ export class HttpProblem extends Error {
     this.code = code;
     this.errors = options.errors;
     this.retryAfterSeconds = options.retryAfterSeconds;
+    this.headers = options.headers;
   }
 }
 
@@ -106,7 +110,10 @@ export function problemResponse(c: Context<AppEnv>, problem: HttpProblem): Respo
     correlation_id: c.get('correlationId'),
     ...(problem.errors === undefined ? {} : { errors: problem.errors.slice(0, MAX_FIELD_ERRORS) }),
   };
-  const headers: Record<string, string> = { 'Content-Type': 'application/problem+json' };
+  const headers: Record<string, string> = {
+    ...problem.headers,
+    'Content-Type': 'application/problem+json',
+  };
   if (problem.retryAfterSeconds !== undefined) {
     headers['Retry-After'] = String(Math.max(1, Math.ceil(problem.retryAfterSeconds)));
   }

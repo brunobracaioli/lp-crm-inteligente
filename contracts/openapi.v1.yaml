@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LP + CRM Inteligente API
-  version: 1.0.0-draft.5
+  version: 1.0.0-draft.6
   description: |
     Contrato API-first do backend (Vercel). Fonte da verdade para o front (LP e CRM web — Codex) e para os testes.
     Specs: docs/specs/lead-capture.md, docs/specs/tracking.md, docs/specs/crm.md.
@@ -21,6 +21,12 @@ info:
     - `x-audit-action`: ação gravada em `core.audit_log` (sucesso e negação), sem PII.
 
     Changelog:
+    - 1.0.0-draft.6 (2026-11-04, Onda 9b): ajustes de texto ao que a implementação faz. (1) `staffBearer`: o JWKS e o
+      `iss` são derivados de `SUPABASE_URL` (`<SUPABASE_URL>/auth/v1/.well-known/jwks.json` e `<SUPABASE_URL>/auth/v1`),
+      sem variáveis próprias. (2) `NoteCreateRequest.body`: além de 1–5000 code points, no máximo 8000 bytes em
+      UTF-8 (limite da coluna `crm.lead_activities.data`); acima disso `400 validation_failed` com `body`/`too_long`.
+      Compatibilidade: (1) só documentação; (2) restringe entradas que antes resultariam em erro interno — texto
+      latino de 5000 caracteres continua aceito.
     - 1.0.0-draft.5 (2026-11-04, Onda 5b): `/internal/v1/outbox/dispatch` e `/sweep` documentam as respostas que
       a implementação já emite depois da assinatura: `400` (`invalid_json` | `validation_failed`), `413`
       (`payload_too_large`, corpo > 1 KB) e `503` (`service_unavailable`, banco indisponível); `sweep` também
@@ -737,9 +743,9 @@ components:
         `Authorization: Bearer` — nunca em query string ou cookie.
 
         **Autenticação** (qualquer falha → `401 unauthorized` genérico, com `WWW-Authenticate: Bearer` e sem indicar
-        o motivo): assinatura verificada com o JWKS de `SUPABASE_JWKS_URL` (nunca `jku`/`jwk`/`x5u` do header do
+        o motivo): assinatura verificada com o JWKS de `<SUPABASE_URL>/auth/v1/.well-known/jwks.json` (nunca `jku`/`jwk`/`x5u` do header do
         token), `alg` ∈ {ES256, RS256} fixado no servidor (nunca `none`, HS* ou o `alg` do header), `iss` =
-        `SUPABASE_JWT_ISSUER`, `aud` = `authenticated`, `role` = `authenticated`, `exp`/`nbf` (tolerância ≤ 5 s),
+        `<SUPABASE_URL>/auth/v1`, `aud` = `authenticated`, `role` = `authenticated`, `exp`/`nbf` (tolerância ≤ 5 s),
         `sub` UUID e `is_anonymous` ≠ true. Falha ao obter chaves sem cache válido → `503` (fail-closed).
 
         **Autorização**: workspace e papel vêm da linha ativa de `core.workspace_members` para o `sub`, lida a cada
@@ -1466,7 +1472,9 @@ components:
           type: string
           minLength: 1
           maxLength: 5000
-          description: Texto livre após o pipeline Unicode (contado em code points). Não confiável.
+          description: >-
+            Texto livre após o pipeline Unicode (contado em code points) e com no máximo 8000 bytes em UTF-8
+            (`400 validation_failed`, `body`/`too_long`). Não confiável.
 
     AnonymizePreviewRequest:
       type: object

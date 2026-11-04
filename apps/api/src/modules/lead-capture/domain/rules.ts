@@ -5,6 +5,7 @@
  * them, and the property tests of AC-LC-13 assert that every accepted value satisfies them. The
  * database CHECK constraints (database §3.3–3.4) mirror them; the DB half of AC-LC-13 is Wave 4.
  */
+import { FORBIDDEN_CHARACTERS, MAX_CONSECUTIVE_LINE_BREAKS } from '#/shared/text.ts';
 
 /** A whitelist rule for one text field. Lengths are in Unicode code points, after normalization. */
 export interface TextRule {
@@ -17,13 +18,9 @@ export interface TextRule {
 }
 
 // ---------------------------------------------------------------------------
-// Unicode pipeline (lead-capture §4, step 3): characters rejected in every text field.
-// \p{Cc} control, \p{Cf} format (zero-width, bidi overrides, BOM), \p{Cs} lone surrogates,
-// \p{Zl}/\p{Zp} line and paragraph separators, U+FFFD replacement character.
-export const FORBIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\uFFFD]/u;
-
-/** `message` keeps `\n` (after CRLF normalization) and caps consecutive line breaks. */
-export const MAX_CONSECUTIVE_LINE_BREAKS = 10;
+// Unicode pipeline (lead-capture §4, step 3): the forbidden characters and the line-break cap live
+// in the shared kernel (the crm uses the same pipeline for staff notes) and are re-exported here.
+export { FORBIDDEN_CHARACTERS, MAX_CONSECUTIVE_LINE_BREAKS } from '#/shared/text.ts';
 
 // ---------------------------------------------------------------------------
 // Names and free text
