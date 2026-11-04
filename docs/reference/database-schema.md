@@ -138,14 +138,16 @@ Convenções: `uuid` v7 gerado pela aplicação (sem default); `timestamptz`; to
 | `created_at`, `updated_at` | timestamptz | não | `now()`; `updated_at` por trigger |
 
 Índices: `leads_workspace_email_active_key` (UNIQUE `(workspace_id, email) WHERE anonymized_at IS NULL`, alvo
-do `ON CONFLICT`), `leads_pipeline_idx`, `leads_owner_stage_idx`, `leads_whatsapp_idx`, `leads_score_band_idx`.
+do `ON CONFLICT`), `leads_workspace_id_id_key` (UNIQUE `(workspace_id, id)`, alvo das FKs compostas),
+`leads_pipeline_idx`, `leads_owner_stage_idx`, `leads_whatsapp_idx`, `leads_score_band_idx`.
 
 ### `capture.submissions`
 
 | Coluna | Tipo | Null | Default / regra |
 |---|---|---|---|
 | `id` | uuid | não | PK |
-| `workspace_id`, `form_id`, `lead_id` | uuid | não | FKs |
+| `workspace_id` | uuid | não | FK `core.workspaces` |
+| `form_id`, `lead_id` | uuid | não | FKs compostas `(workspace_id, form_id)` → `core.forms` e `(workspace_id, lead_id)` → `crm.leads` |
 | `idempotency_key` | uuid | não | `UNIQUE (workspace_id, idempotency_key)` |
 | `request_hash` | text | não | SHA-256 hex, 64 caracteres |
 | `event_id` | uuid | não | `UNIQUE (workspace_id, event_id)` (dedup Pixel × CAPI) |
@@ -164,18 +166,20 @@ do `ON CONFLICT`), `leads_pipeline_idx`, `leads_owner_stage_idx`, `leads_whatsap
 | `pii_purged_at` | timestamptz | sim | se preenchido, `client_ip` e `user_agent` são `NULL` |
 | `created_at` | timestamptz | não | `now()` |
 
-Índices: `submissions_lead_created_idx` `(lead_id, created_at DESC)`, `submissions_pii_purge_idx`
+Índices: `submissions_workspace_id_id_key` UNIQUE `(workspace_id, id)` (alvo da FK composta de `consents`),
+`submissions_lead_created_idx` `(lead_id, created_at DESC)`, `submissions_pii_purge_idx`
 `(created_at) WHERE pii_purged_at IS NULL`.
 
 ### `capture.consents` (append-only)
 
-`id`, `workspace_id`, `lead_id`, `submission_id` (FKs), `purpose` (`privacy_policy`, `marketing_communications`,
+`id`, `workspace_id` (FK `core.workspaces`), `lead_id`, `submission_id` (FKs compostas com `workspace_id`),
+`purpose` (`privacy_policy`, `marketing_communications`,
 `ad_tracking`), `granted`, `policy_version` (mesmo formato de `forms`), `created_at`. Índice
 `consents_lead_purpose_idx` `(lead_id, purpose, created_at DESC)`.
 
 ### `crm.lead_activities` (append-only)
 
-`id`, `workspace_id`, `lead_id`, `type` (8 tipos de database §3.6), `actor_type` (`system`, `user`, `ai`),
+`id`, `workspace_id` (FK `core.workspaces`), `lead_id` (FK composta com `workspace_id`), `type` (8 tipos de database §3.6), `actor_type` (`system`, `user`, `ai`),
 `actor_id` (anulável), `data` (objeto JSON ≤ 8 KB, só IDs e códigos), `created_at`. Índice
 `lead_activities_lead_created_idx` `(lead_id, created_at DESC)`.
 
@@ -183,12 +187,14 @@ do `ON CONFLICT`), `leads_pipeline_idx`, `leads_owner_stage_idx`, `leads_whatsap
 
 `id`, `workspace_id`, `aggregate_type` (`lead`), `aggregate_id`, `event_type` (`lead.captured`,
 `lead.stage_changed`), `payload` (objeto JSON, **sem PII**), `status` (`pending` default, `processing`, `done`,
-`dead`), `attempts` (≥ 0), `next_attempt_at` (`now()`), `locked_until`, `created_at`, `processed_at`. Índice
-parcial `outbox_events_sweeper_idx` `(status, next_attempt_at) WHERE status IN ('pending','processing')`.
+`dead`), `attempts` (≥ 0), `next_attempt_at` (`now()`), `locked_until`, `created_at`, `processed_at`. Índices:
+`outbox_events_workspace_id_id_key` UNIQUE `(workspace_id, id)` (alvo da FK composta de `deliveries`) e o parcial
+`outbox_events_sweeper_idx` `(status, next_attempt_at) WHERE status IN ('pending','processing')`.
 
 ### `tracking.deliveries`
 
-`id`, `outbox_event_id` (FK), `workspace_id`, `destination` (`meta_capi`, `ga4_mp`, `google_ads`,
+`id`, `outbox_event_id` (FK composta `(workspace_id, outbox_event_id)` → `tracking.outbox_events`),
+`workspace_id` (FK `core.workspaces`), `destination` (`meta_capi`, `ga4_mp`, `google_ads`,
 `ai_qualification`), `status` (`pending` default, `sent`, `skipped_no_consent`, `skipped_disabled`, `failed`,
 `dead`), `attempts`, `last_http_status` (100–599), `last_error_code` (≤ 100, código interno), `external_ref`
 (≤ 200), `created_at`, `updated_at` (trigger). `UNIQUE (outbox_event_id, destination)`.
@@ -202,6 +208,15 @@ parcial `outbox_events_sweeper_idx` `(status, next_attempt_at) WHERE status IN (
 
 ## Garantias de integridade
 
+- **Referências seguras entre tenants**: toda FK entre tabelas com `workspace_id` é composta —
+  `(workspace_id, <pai>_id)` → `<pai> (workspace_id, id)` — e todo pai referenciado tem
+  `UNIQUE (workspace_id, id)` (`forms`, `leads`, `submissions`, `outbox_events`). As verificações de FK ignoram
+  RLS, então esta é a única barreira contra um filho do workspace B apontar para um pai do workspace A; um pai com
+  filhos também não pode mudar de workspace. Violação → `foreign_key_violation` (`23503`). As FKs simples
+  restantes são só `workspace_id` → `core.workspaces (id)`. FKs nomeadas: `submissions_form_fkey`,
+  `submissions_lead_fkey`, `consents_lead_fkey`, `consents_submission_fkey`, `lead_activities_lead_fkey`,
+  `deliveries_outbox_event_fkey`. Novas migrations devem seguir o mesmo padrão (um teste de catálogo em `001`
+  falha se surgir FK entre tabelas de workspace que não seja composta).
 - **Append-only**: `capture.consents`, `crm.lead_activities` e `core.audit_log` têm trigger
   `BEFORE UPDATE OR DELETE` (por linha) e `BEFORE TRUNCATE` que lançam `restrict_violation` (`23001`) — vale
   até para o dono da tabela. Para `lp_api` a primeira barreira é a ausência de privilégio (`42501`).
@@ -221,12 +236,14 @@ parcial `outbox_events_sweeper_idx` `(status, next_attempt_at) WHERE status IN (
    consistência de `pii_purged_at` com `client_ip`/`user_agent`, `ip_hmac` e `request_hash` em hex de 64,
    limites de tamanho em `audit_log`/`deliveries`.
 4. **Guarda de `TRUNCATE`** nas três tabelas append-only (a spec só cita `UPDATE`/`DELETE`).
-5. **Defaults de conveniência**: `score = 0`, `score_band = 'C'`, `score_breakdown = '[]'`,
+5. **FKs compostas por tenant** (pedido da revisão da wave 1): a spec descreve FKs simples; a migration usa
+   `(workspace_id, id)` para impedir referências entre workspaces (ver "Garantias de integridade").
+6. **Defaults de conveniência**: `score = 0`, `score_band = 'C'`, `score_breakdown = '[]'`,
    `submissions_count = 1`, `version = 1`, `first_touch/last_touch = '{}'`, `marketing_opt_in = false`.
-6. **Retenção (wave 6b)**: o trigger append-only de `core.audit_log` também bloqueia o `DELETE` mensal de 12
+7. **Retenção (wave 6b)**: o trigger append-only de `core.audit_log` também bloqueia o `DELETE` mensal de 12
    meses previsto em database §6. A wave 6b precisa de uma exceção explícita (por exemplo, função
    `SECURITY DEFINER` dedicada que o trigger reconheça) — decisão a registrar em ADR naquela onda.
-7. `lp_api` herda `USAGE` em `public` via `PUBLIC` (padrão do Postgres/Supabase); como `public` não tem
+8. `lp_api` herda `USAGE` em `public` via `PUBLIC` (padrão do Postgres/Supabase); como `public` não tem
    objetos (AC-DB-10) e `lp_api` não tem `CREATE`, não há acesso efetivo.
 
 ## Cobertura dos critérios de aceite
@@ -239,6 +256,7 @@ parcial `outbox_events_sweeper_idx` `(status, next_attempt_at) WHERE status IN (
 | AC-DB-06, AC-DB-07, AC-DB-08 | `supabase/tests/004_constraints.test.sql` |
 | AC-DB-09 (RLS), AC-DB-10 | `supabase/tests/001_schema_posture.test.sql`; o lint é `supabase db lint` |
 | Carga real do `POST /v1/leads` e do sweeper como `lp_api` | `supabase/tests/005_runtime_workload.test.sql` |
+| FKs compostas (filho do workspace B → pai do A: submissions→leads/forms, consents→submissions/leads, activities→leads, deliveries→outbox, mover pai com filhos) e teste de catálogo "toda FK entre tabelas de workspace é composta" | `supabase/tests/006_tenant_safe_foreign_keys.test.sql` e `001_schema_posture.test.sql` |
 
 AC-DB-07 verifica o resultado de dois `INSERT … ON CONFLICT` em sequência; a corrida real entre duas
 transações simultâneas é coberta pelo teste de integração da wave 4 (AC-LC-04).

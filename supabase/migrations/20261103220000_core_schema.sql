@@ -7,6 +7,9 @@
 --   * No secrets here. The `lp_api` password is set out-of-band (docs/how-to/rotate-db-role-password.md).
 --   * No dynamic SQL (Semgrep rule no-dynamic-sql-in-migrations).
 --   * A CHECK constraint passes when its expression is NULL, so nullable columns need no IS NULL guard.
+--   * Parent/child links are composite, (workspace_id, <parent>_id) -> parent (workspace_id, id): foreign-key
+--     checks bypass RLS, so this is the only barrier that stops a child row from pointing at another
+--     workspace's parent. Every referenced parent therefore carries UNIQUE (workspace_id, id).
 --   * Migrations are immutable: fix forward with a new migration.
 
 -- ---------------------------------------------------------------------------
@@ -158,6 +161,7 @@ CREATE TABLE core.forms (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT forms_form_key_key UNIQUE (form_key),
+  CONSTRAINT forms_workspace_id_id_key UNIQUE (workspace_id, id),
   CONSTRAINT forms_form_key_format_check CHECK (form_key ~ '^frm_[a-z0-9_]{3,40}$'),
   CONSTRAINT forms_name_length_check CHECK (char_length(name) BETWEEN 1 AND 120),
   CONSTRAINT forms_status_check CHECK (status IN ('active', 'paused', 'archived')),
@@ -169,6 +173,7 @@ CREATE TABLE core.forms (
 
 COMMENT ON TABLE core.forms IS 'Public form definitions. form_key is the public identifier used to route a submission to its workspace.';
 COMMENT ON INDEX core.forms_form_key_key IS 'Form lookup by public form_key (step 5 of the lead-capture flow).';
+COMMENT ON INDEX core.forms_workspace_id_id_key IS 'Target of the composite foreign key from capture.submissions (tenant-safe reference).';
 
 -- 4.3 crm.leads (Lead aggregate) -------------------------------------------
 
@@ -203,6 +208,7 @@ CREATE TABLE crm.leads (
   version integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT leads_workspace_id_id_key UNIQUE (workspace_id, id),
   CONSTRAINT leads_first_name_length_check CHECK (char_length(first_name) BETWEEN 1 AND 60),
   CONSTRAINT leads_last_name_length_check CHECK (char_length(last_name) BETWEEN 1 AND 80),
   CONSTRAINT leads_email_length_check CHECK (char_length(email) <= 254),
@@ -248,6 +254,8 @@ CREATE TABLE crm.leads (
 COMMENT ON TABLE crm.leads IS 'Lead aggregate root: one active row per (workspace_id, email). Contact fields are PII.';
 COMMENT ON COLUMN crm.leads.owner_user_id IS 'Logical reference to auth.users.id (wave 9); not a foreign key.';
 COMMENT ON COLUMN crm.leads.version IS 'Optimistic lock: UPDATE ... WHERE version = expected_version, then version + 1.';
+COMMENT ON INDEX crm.leads_workspace_id_id_key IS
+  'Target of the composite foreign keys from submissions, consents and lead activities (tenant-safe reference).';
 COMMENT ON COLUMN crm.leads.anonymized_at IS 'LGPD: set by crm.anonymize_lead (wave 6); an anonymized lead leaves the active e-mail unique index.';
 
 -- Dedupe (R1) and conflict target of INSERT ... ON CONFLICT (workspace_id, email) WHERE anonymized_at IS NULL.
@@ -274,8 +282,8 @@ COMMENT ON INDEX crm.leads_score_band_idx IS 'Hot-leads queue: newest leads of a
 CREATE TABLE capture.submissions (
   id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES core.workspaces (id),
-  form_id uuid NOT NULL REFERENCES core.forms (id),
-  lead_id uuid NOT NULL REFERENCES crm.leads (id),
+  form_id uuid NOT NULL,
+  lead_id uuid NOT NULL,
   idempotency_key uuid NOT NULL,
   request_hash text NOT NULL,
   event_id uuid NOT NULL,
@@ -305,6 +313,9 @@ CREATE TABLE capture.submissions (
   antibot jsonb NOT NULL,
   pii_purged_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT submissions_workspace_id_id_key UNIQUE (workspace_id, id),
+  CONSTRAINT submissions_form_fkey FOREIGN KEY (workspace_id, form_id) REFERENCES core.forms (workspace_id, id),
+  CONSTRAINT submissions_lead_fkey FOREIGN KEY (workspace_id, lead_id) REFERENCES crm.leads (workspace_id, id),
   CONSTRAINT submissions_idempotency_key_key UNIQUE (workspace_id, idempotency_key),
   CONSTRAINT submissions_event_id_key UNIQUE (workspace_id, event_id),
   CONSTRAINT submissions_request_hash_check CHECK (request_hash ~ '^[0-9a-f]{64}$'),
@@ -347,6 +358,8 @@ COMMENT ON COLUMN capture.submissions.user_agent IS 'Raw user agent for CAPI onl
 COMMENT ON COLUMN capture.submissions.ip_hmac IS 'HMAC-SHA256(IP, HASH_PEPPER) hex: kept after the purge for anti-fraud analytics.';
 COMMENT ON COLUMN capture.submissions.request_hash IS 'SHA-256 hex of the normalized payload without turnstile_token (idempotency, R7).';
 
+COMMENT ON INDEX capture.submissions_workspace_id_id_key IS
+  'Target of the composite foreign key from capture.consents (tenant-safe reference).';
 COMMENT ON INDEX capture.submissions_idempotency_key_key IS
   'Second idempotency barrier behind Redis (R7); target of ON CONFLICT (workspace_id, idempotency_key).';
 COMMENT ON INDEX capture.submissions_event_id_key IS
@@ -363,12 +376,15 @@ COMMENT ON INDEX capture.submissions_pii_purge_idx IS 'Daily PII purge job (wave
 CREATE TABLE capture.consents (
   id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES core.workspaces (id),
-  lead_id uuid NOT NULL REFERENCES crm.leads (id),
-  submission_id uuid NOT NULL REFERENCES capture.submissions (id),
+  lead_id uuid NOT NULL,
+  submission_id uuid NOT NULL,
   purpose text NOT NULL,
   granted boolean NOT NULL,
   policy_version text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT consents_lead_fkey FOREIGN KEY (workspace_id, lead_id) REFERENCES crm.leads (workspace_id, id),
+  CONSTRAINT consents_submission_fkey
+    FOREIGN KEY (workspace_id, submission_id) REFERENCES capture.submissions (workspace_id, id),
   CONSTRAINT consents_purpose_check
     CHECK (purpose IN ('privacy_policy', 'marketing_communications', 'ad_tracking')),
   CONSTRAINT consents_policy_version_check
@@ -385,12 +401,13 @@ COMMENT ON INDEX capture.consents_lead_purpose_idx IS 'Current consent of a lead
 CREATE TABLE crm.lead_activities (
   id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES core.workspaces (id),
-  lead_id uuid NOT NULL REFERENCES crm.leads (id),
+  lead_id uuid NOT NULL,
   type text NOT NULL,
   actor_type text NOT NULL,
   actor_id uuid,
   data jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT lead_activities_lead_fkey FOREIGN KEY (workspace_id, lead_id) REFERENCES crm.leads (workspace_id, id),
   CONSTRAINT lead_activities_type_check CHECK (
     type IN (
       'submission_received', 'stage_changed', 'owner_assigned', 'note_added', 'score_changed',
@@ -422,6 +439,7 @@ CREATE TABLE tracking.outbox_events (
   locked_until timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   processed_at timestamptz,
+  CONSTRAINT outbox_events_workspace_id_id_key UNIQUE (workspace_id, id),
   CONSTRAINT outbox_events_aggregate_type_check CHECK (aggregate_type IN ('lead')),
   CONSTRAINT outbox_events_event_type_check CHECK (event_type IN ('lead.captured', 'lead.stage_changed')),
   CONSTRAINT outbox_events_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
@@ -430,6 +448,9 @@ CREATE TABLE tracking.outbox_events (
 );
 
 COMMENT ON TABLE tracking.outbox_events IS 'Transactional outbox (ADR-0004). payload carries IDs and metadata only, never PII.';
+
+COMMENT ON INDEX tracking.outbox_events_workspace_id_id_key IS
+  'Target of the composite foreign key from tracking.deliveries (tenant-safe reference).';
 
 CREATE INDEX outbox_events_sweeper_idx
   ON tracking.outbox_events (status, next_attempt_at)
@@ -440,7 +461,7 @@ COMMENT ON INDEX tracking.outbox_events_sweeper_idx IS 'Outbox sweeper: events s
 
 CREATE TABLE tracking.deliveries (
   id uuid PRIMARY KEY,
-  outbox_event_id uuid NOT NULL REFERENCES tracking.outbox_events (id),
+  outbox_event_id uuid NOT NULL,
   workspace_id uuid NOT NULL REFERENCES core.workspaces (id),
   destination text NOT NULL,
   status text NOT NULL DEFAULT 'pending',
@@ -452,6 +473,8 @@ CREATE TABLE tracking.deliveries (
   external_ref text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT deliveries_outbox_event_fkey
+    FOREIGN KEY (workspace_id, outbox_event_id) REFERENCES tracking.outbox_events (workspace_id, id),
   CONSTRAINT deliveries_outbox_destination_key UNIQUE (outbox_event_id, destination),
   CONSTRAINT deliveries_destination_check
     CHECK (destination IN ('meta_capi', 'ga4_mp', 'google_ads', 'ai_qualification')),

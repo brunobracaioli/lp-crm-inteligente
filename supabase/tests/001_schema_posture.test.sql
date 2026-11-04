@@ -3,7 +3,7 @@
 -- Catalog checks only: they also protect tables added by future migrations.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT plan(22);
+SELECT plan(24);
 
 -- Schemas and role --------------------------------------------------------------------------------
 
@@ -168,6 +168,33 @@ SELECT is(
 );
 
 SELECT col_is_pk('core', 'audit_log', 'id', 'audit_log.id is the primary key');
+
+-- Tenant-safe references: every foreign key except the one to core.workspaces is composite on workspace_id first.
+SELECT cmp_ok(
+  (SELECT count(*) FROM pg_catalog.pg_constraint c
+   JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
+   JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+   WHERE c.contype = 'f' AND n.nspname IN ('core', 'crm', 'capture', 'tracking')
+     AND c.confrelid <> 'core.workspaces'::regclass),
+  '>=', 6::bigint,
+  'the composite (workspace_id, id) foreign keys exist'
+);
+
+SELECT is(
+  (SELECT count(*) FROM pg_catalog.pg_constraint c
+   JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
+   JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+   WHERE c.contype = 'f' AND n.nspname IN ('core', 'crm', 'capture', 'tracking')
+     AND c.confrelid <> 'core.workspaces'::regclass
+     AND NOT (
+       cardinality(c.conkey) = 2
+       AND (SELECT a.attname FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.conrelid AND a.attnum = c.conkey[1]) = 'workspace_id'
+       AND (SELECT a.attname FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.confrelid AND a.attnum = c.confkey[1]) = 'workspace_id'
+       AND (SELECT a.attname FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.confrelid AND a.attnum = c.confkey[2]) = 'id'
+     )),
+  0::bigint,
+  'no foreign key between workspace-scoped tables is single-column: all reference (workspace_id, id)'
+);
 
 SELECT * FROM finish();
 ROLLBACK;
