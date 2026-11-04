@@ -11,6 +11,35 @@ URL cujo host não seja `127.0.0.1`, `localhost` ou `::1`.
 - Uma stack local por máquina (portas do `supabase/config.toml`; o Postgres usa `54722`). Não rode a suíte
   enquanto outra sessão usa a mesma stack: os arquivos compartilham o banco.
 
+## Sem Docker: Postgres 18 descartável
+
+Em máquinas sem Docker (sem `supabase start`), use `scripts/local-db/throwaway-postgres.sh`: um cluster Postgres 18
+em diretório descartável, só em loopback, autenticação `trust`, sem segredos.
+
+```bash
+export PGDATA_DIR=/tmp/lp-pg PGPORT=54731
+scripts/local-db/throwaway-postgres.sh up      # initdb (1ª vez) + start + roles anon/authenticated/service_role
+scripts/local-db/throwaway-postgres.sh reset   # recria o banco, aplica supabase/migrations/*.sql, define a senha de lp_api
+TEST_DATABASE_URL=postgresql://lp_api:lp_api_local_test@127.0.0.1:54731/postgres \
+TEST_ADMIN_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54731/postgres \
+  pnpm --filter api test:integration
+scripts/local-db/throwaway-postgres.sh down
+```
+
+### pg_cron e pgTAP localmente
+
+A migration da wave 6b **exige** `pg_cron` (`CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA pg_catalog` e
+`cron.schedule(...)`), sem fallback condicional: no Supabase (hospedado ou `supabase start`) a extensão existe,
+e se faltar a migration falha alto em vez de entregar uma retenção que nunca roda.
+
+O cluster descartável não tem `pg_cron`. Em vez de tornar a migration condicional, `up` aponta
+`extension_control_path` (Postgres 18) para `scripts/local-db/pg_cron_stub/`, uma extensão **de mesmo nome** que só
+registra os jobs em `cron.job` e nunca os executa. A migration roda idêntica à de produção e os testes leem
+`cron.job`. Os jobs em si são exercitados chamando as funções diretamente (`retention.test.ts`).
+
+O cluster também não tem pgTAP: `supabase/tests/*.test.sql` só rodam com `supabase test db`. Os testes de retenção e
+anonimização têm espelho em Vitest (`retention.test.ts`, `anonymize-lead.test.ts`) justamente para rodar aqui.
+
 ## Passos
 
 1. Suba a stack e aplique migrations + seed:
@@ -60,6 +89,8 @@ produção: use `docs/how-to/rotate-db-role-password.md`.
 | `lead-capture-repositories.test.ts` | Form lookup, submissão (idempotency key e `event_id` duplicados), consentimentos, outbox, auditoria |
 | `staff-membership.test.ts` | Resolução da membership do staff por `lp_api` (ativo, inativo, ausente, ambíguo), isolamento cross-tenant de `core.workspace_members`, `lp_api` somente leitura, diretório de membros |
 | `submit-lead.integration.test.ts` | AC-LC-01, 04, 09/10 (barreira do banco), 13 (metade do banco), 14 e 18 com `createSubmitLead` e adapters reais |
+| `retention.test.ts` | Expurgo de IP/UA (30 dias, lotes, idempotência), outbox (90 dias, só `done`), auditoria (12 meses, guarda append-only), inatividade (24 meses entre workspaces), privilégios (`lp_api` não executa expurgo), `SECURITY DEFINER` + `search_path` vazio, jobs em `cron.job` |
+| `anonymize-lead.test.ts` | `crm.anonymize_lead`: `true`/`false`, cross-tenant, idempotência e concorrência, varredura do banco atrás da PII original, notas e payloads, atribuição, e-mail reutilizável (AC-CRM-09), timeline continua append-only |
 
 ## Problemas comuns
 

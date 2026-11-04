@@ -1,6 +1,6 @@
 # Spec — Banco de dados (Supabase Postgres)
 
-> Status: **draft v0.1** · Waves: 1 (schema núcleo), 6 (retenção), 9 (membros/staff)
+> Status: **draft v0.2** · Waves: 1 (schema núcleo), 6b (retenção e anonimização), 9 (membros/staff)
 > ADRs: [0003](../adr/0003-database-access-dedicated-role-private-schemas.md),
 > [0006](../adr/0006-multi-tenant-ready-single-workspace.md)
 
@@ -225,7 +225,17 @@ GRANT USAGE ON SCHEMA core, crm, capture, tracking TO lp_api;
 | `auth.*`, `storage.*`, `public.*` | nada |
 
 Nenhum `DELETE`/`TRUNCATE`/DDL. Expurgo e anonimização em massa rodam como funções
-`SECURITY DEFINER` com `search_path = ''`, agendadas via `pg_cron` (wave 6), não pelo runtime.
+`SECURITY DEFINER` com `search_path = ''`, agendadas via `pg_cron` (wave 6b), não pelo runtime.
+
+| Função (wave 6b) | `lp_api` | Quem executa |
+|---|---|---|
+| `crm.anonymize_lead(lead_id, actor_type, actor_id, correlation_id)` | `EXECUTE` (a única) | API (rota de anonimização, wave 9b) |
+| `crm.anonymize_lead_unchecked(workspace_id, lead_id, …)` | nada | interna: `crm.anonymize_lead` e o job de 24 meses |
+| `capture.purge_submission_pii`, `tracking.purge_completed_outbox`, `core.purge_audit_log`, `crm.anonymize_inactive_leads` | nada | só `pg_cron` |
+
+`PUBLIC`, `anon`, `authenticated` e `service_role` não executam nenhuma delas. O dono das funções
+(a role da migration) precisa de `SUPERUSER` ou `BYPASSRLS` — as policies são só para `lp_api` e o RLS
+é `FORCE`; a migration aborta se isso não valer.
 
 ## 5. Políticas RLS
 
@@ -237,17 +247,55 @@ Nenhum `DELETE`/`TRUNCATE`/DDL. Expurgo e anonimização em massa rodam como fun
 
 ## 6. Retenção e expurgo
 
-| Dado | Retenção | Mecanismo (wave 6) |
+| Dado | Retenção | Mecanismo (wave 6b) |
 |---|---|---|
-| `capture.submissions.client_ip`, `user_agent` | 30 dias | `pg_cron` diário → `NULL` + `pii_purged_at` |
-| `tracking.outbox_events` / `deliveries` concluídos | 90 dias | `pg_cron` diário → `DELETE` |
-| `core.audit_log` | 12 meses | `pg_cron` mensal |
-| Leads sem atividade (não `won`) | 24 meses (Q5) | anonimização (`crm.anonymize_lead`) |
+| `capture.submissions.client_ip`, `user_agent` | 30 dias | `capture.purge_submission_pii()`, `pg_cron` diário 03:15 UTC → `NULL` + `pii_purged_at` |
+| `tracking.outbox_events` / `deliveries` concluídos | 90 dias | `tracking.purge_completed_outbox()`, diário 03:30 UTC → `DELETE` |
+| `core.audit_log` | 12 meses | `core.purge_audit_log()`, mensal (dia 1, 03:45 UTC) → `DELETE` |
+| Leads sem atividade (não `won`) | 24 meses (Q5) | `crm.anonymize_inactive_leads()`, diário 04:00 UTC → `crm.anonymize_lead_unchecked` |
 | `capture.consents` | enquanto houver relação + 5 anos (prova) | mantidos, vinculados ao lead anonimizado |
 
-Anonimização (`crm.anonymize_lead(lead_id)`): substitui nome/e-mail/WhatsApp/empresa/site por
-valores irreversíveis (`anon+<uuid>@anonymized.invalid`, que satisfaz os CHECKs), zera `message`, `fields`, click IDs, IP/UA das
-submissões, grava atividade `anonymized` e audit. Mantém IDs, estágio, score e datas (métricas).
+Regras comuns das funções de expurgo: `SECURITY DEFINER`, `search_path = ''`, sem SQL dinâmico, cortes
+estritos ("mais antigo que"), idempotentes, em lotes (`p_batch_size` × `p_max_batches`; o resto fica para a
+próxima execução) e retornam quantas linhas trataram. Os jobs ficam em `cron.job` com nome `lp-retention-*`;
+`cron.schedule(nome, …)` substitui um job de mesmo nome, então reaplicar a migration é seguro.
+
+- **Outbox**: só eventos `done` (todas as entregas terminais) com `processed_at` > 90 dias, e suas entregas.
+  `pending`, `processing` e `dead` nunca são apagados (`dead` espera o reprocessamento manual); um evento
+  `done` com entrega `pending`/`failed` também é preservado.
+- **Auditoria**: as tabelas append-only ganham exceções estreitas, ambas dependentes de uma flag local à
+  transação (`app.retention_purge` / `app.lead_anonymization`) que só as funções acima ligam e que o próprio
+  dado limita: o trigger de `core.audit_log` só deixa apagar linhas > 12 meses; o de `crm.lead_activities` só
+  deixa mudar `data`. `UPDATE` na auditoria e `DELETE` na timeline continuam proibidos; `lp_api` não tem esses
+  privilégios de qualquer forma.
+- **Inatividade**: atividade = última submissão (`last_submitted_at`) ou qualquer item da timeline; vale o mais
+  recente. A frequência diária não vem da Q5 (a spec só dá os 24 meses); o teto de 100 × 10 leads por
+  execução limita o raio de ação de um erro.
+
+### Anonimização — `crm.anonymize_lead`
+
+`crm.anonymize_lead(p_lead_id uuid, p_actor_type text, p_actor_id uuid, p_correlation_id uuid) RETURNS boolean`
+(`SECURITY DEFINER`, `search_path = ''`; contrato congelado — a 9b codifica contra ele).
+
+- **Escopo**: usa `core.current_workspace_id()`. Retorna `true` quando anonimizou agora; `false` quando o lead
+  não é visível no workspace atual (inclui escopo ausente e outro workspace) ou já está anonimizado. Trava a
+  linha (`FOR UPDATE`), então chamadas concorrentes resultam em exatamente um `true`.
+- **Não escreve `core.audit_log`**: quem audita é a API (inclusive as negativas). `p_correlation_id` é
+  obrigatório e vai só para uma linha de log do Postgres (`lead_anonymized`, apenas IDs), para casar com a
+  linha de auditoria da API.
+- **Apaga/substitui** (CHECKs satisfeitos): nome → `Anonymized Lead`; e-mail → `anon+<lead_id>@anonymized.invalid`;
+  WhatsApp → `+10000000000`; empresa → `Anonymized`; site e `job_title` → `NULL`; `area_of_expertise_other` →
+  `anonymized` (só quando a área é `other`); `marketing_opt_in` → `false`; `first_touch`/`last_touch` ficam só
+  com `utm_*` e as URLs sem query string (click IDs, `fbp`, `fbc`, `ga_client_id` saem — gap G4).
+- **Submissões do lead**: `fields` → `{}`, `message` e click IDs/cookies/`ga_client_id` → `NULL`, URLs sem query
+  string, `client_ip`/`user_agent` → `NULL` (+ `pii_purged_at`), `ip_hmac` e `request_hash` → zeros (hashes sem
+  chave de PII permitem confirmar um e-mail ou IP conhecido), `ephemeral_id` do Turnstile removido.
+- **Timeline** (G4): corpo de `note_added` → `[anonymized]`; os demais payloads mantêm só chaves de ID/código/
+  número de uma allow-list; depois grava **uma** atividade `anonymized` com o ator informado.
+- **Mantém**: IDs, estágio, `lost_reason`, score/banda, datas, contadores, consentimentos (prova) e eventos do
+  outbox (só IDs). `version` é incrementada (lock otimista). Depois dela o mesmo e-mail pode entrar como novo
+  lead (índice único parcial `WHERE anonymized_at IS NULL`; AC-DB-08, AC-CRM-09).
+- **Fora do alcance**: PII já enviada (hash) a Meta/Google (risco residual R5 do threat model).
 
 ## 7. Critérios de aceite (pgTAP — `supabase test db`)
 
@@ -263,4 +311,9 @@ submissões, grava atividade `anonymized` e audit. Mantém IDs, estágio, score 
 | AC-DB-08 | Lead anonimizado libera o e-mail para novo lead |
 | AC-DB-09 | `supabase db lint` sem erros e todas as tabelas têm RLS `ENABLE` + `FORCE` (query em `pg_class`) |
 | AC-DB-10 | O schema da Data API (`public`) não contém tabelas |
-| AC-DB-11 | `core.workspace_members`: RLS `ENABLE`+`FORCE`; `lp_api` só `SELECT`; `anon`/`authenticated` sem acesso; sem setting a tabela é vazia; o lookup por usuário só vê a linha ativa do próprio `sub`; workspace A não vê membros de B (`supabase/tests/009_workspace_members.test.sql`, espelhado em `apps/api/test/integration/staff-membership.test.ts`) |
+| AC-DB-11 | Após 30 dias simulados `client_ip`/`user_agent` ficam `NULL` com `pii_purged_at`; linhas mais novas (e exatamente no corte) ficam intactas; segunda execução não faz nada (`007_retention`) |
+| AC-DB-12 | Outbox: só `done` > 90 dias é apagado (com entregas); `pending`/`processing`/`dead` ficam. Auditoria: só > 12 meses, e só dentro da função de expurgo (`007_retention`) |
+| AC-DB-13 | Leads não `won` sem atividade há 24 meses são anonimizados entre workspaces; `won`, recentes e com atividade recente ficam (`007_retention`) |
+| AC-DB-14 | `crm.anonymize_lead`: `true`/`false` conforme o contrato, outro workspace → `false` sem alterar nada, apaga lead/atribuição/submissões/notas/payloads, mantém IDs/estágio/score/datas/consentimentos, uma atividade `anonymized` (`008_anonymize_lead`) |
+| AC-DB-15 | `lp_api` executa só `crm.anonymize_lead`; nenhuma função de expurgo nem a `unchecked`; `anon`/`authenticated`/`service_role` nenhuma; todas `SECURITY DEFINER` com `search_path = ''`; os quatro jobs `lp-retention-*` agendados no `pg_cron` (`007_retention`) |
+| AC-DB-16 | `core.workspace_members`: RLS `ENABLE`+`FORCE`; `lp_api` só `SELECT`; `anon`/`authenticated` sem acesso; sem setting a tabela é vazia; o lookup por usuário só vê a linha ativa do próprio `sub`; workspace A não vê membros de B (`supabase/tests/009_workspace_members.test.sql`, espelhado em `apps/api/test/integration/staff-membership.test.ts`) |
