@@ -14,7 +14,7 @@
 | 1 | Banco: schemas, tabelas, role `lp_api`, RLS, seed, pgTAP | subagent Sonnet | 0 | 2, 3, 7a, 9a, 11a | ✅ |
 | 2 | Domínio + use case `SubmitLead` (VOs, agregado Lead, pipeline, score v1) com fakes | subagent Sonnet + revisão | 0 | 1, 3, 7a, 9a, 11a | ✅ |
 | 3 | Adapters de borda: Turnstile, rate limit, idempotência (Upstash) | subagent Sonnet | 0 | 1, 2, 7a, 9a, 11a | ✅ |
-| 4 | Slice `POST /v1/leads` ponta a ponta + deploy preview | Claude (principal) | 1, 2, 3 | 5a, 7a | ⬜ |
+| 4 | Slice `POST /v1/leads` ponta a ponta + deploy preview | Claude (principal) | 1, 2, 3 | 5a, 7a | 🟡 |
 | 5a | Tracking isolado: domínio (consentimento, hashing com vetores Meta), `meta-capi-client`, `qstash-signature`, `qstash-publisher` — só unit/MSW | subagent Sonnet | 0 | 4, 7a | ✅ |
 | 5b | Tracking wiring: rotas `/internal/v1/outbox/*`, `DispatchOutboxEvent`/`SweepOutbox` com Postgres, publish pós-commit, schedule IaC | Claude (principal) | 4, 5a | 6a, 7b, 8a | ⬜ |
 | 6a | Hardening sem conflito: runbooks, roteiro k6, config ZAP, revisão do threat model | subagent Sonnet | 4 | 5b, 7b, 8a | ⬜ |
