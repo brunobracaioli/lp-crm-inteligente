@@ -848,6 +848,20 @@ describe('SubmitLead: idempotency (R7)', () => {
     expect(h.idempotency.stateOf(WORKSPACE_ID, IDEMPOTENCY_KEY)).toBeUndefined();
   });
 
+  it('still replays when the unit of work wraps the rollback rejection in its own error', async () => {
+    // arrange
+    const h = createSubmitLeadHarness();
+    h.idempotency.down = true;
+    const first = accepted(await h.submit());
+    h.unitOfWork.wrapRejections = true;
+    // act
+    const retry = accepted(await h.submit());
+    // assert
+    expect(retry.outcome).toBe('replayed');
+    expect(retry.accepted).toEqual(first.accepted);
+    expect(h.leads.all()[0]?.submissionsCount).toBe(1);
+  });
+
   it('treats a duplicate that cannot be found as an infrastructure error and frees the claim', async () => {
     // arrange
     const h = createSubmitLeadHarness();

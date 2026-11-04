@@ -89,15 +89,19 @@ export type SubmitLead = (command: SubmitLeadCommand) => Promise<SubmitLeadResul
 /**
  * Internal rollback signal. `UnitOfWork.run` commits when the work resolves and rolls back when it
  * rejects, so a duplicate idempotency key found after the lead was already upserted has to reject.
+ * The stored reference travels in a `DuplicateProbe`, not in the error, so a unit of work that
+ * wraps or replaces the rejection cannot hide the duplicate.
  */
-class DuplicateSubmissionSignal extends Error {
-  readonly existing: StoredSubmissionReference | null;
-
-  constructor(existing: StoredSubmissionReference | null) {
+class DuplicateSubmissionRollback extends Error {
+  constructor() {
     super('submission with the same idempotency key already exists');
-    this.name = 'DuplicateSubmissionSignal';
-    this.existing = existing;
+    this.name = 'DuplicateSubmissionRollback';
   }
+}
+
+/** `existing` stays `undefined` unless the insert hit the UNIQUE (workspace_id, idempotency_key). */
+interface DuplicateProbe {
+  existing: StoredSubmissionReference | null | undefined;
 }
 
 const refuse = (failure: SubmitLeadFailure): SubmitLeadResult => err(failure);
@@ -164,6 +168,7 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
     requestHash: string,
     antibot: SubmissionRecord['antibot'],
     eventId: EventId,
+    duplicate: DuplicateProbe,
   ): Promise<{ accepted: AcceptedSubmission; outboxEventId: OutboxEventId }> => {
     const now = deps.clock.now();
     const { workspaceId } = form;
@@ -200,12 +205,12 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
         createdAt: now,
       });
       if (inserted === 'duplicate_idempotency_key') {
-        const existing = await deps.submissions.findByIdempotencyKey(
+        duplicate.existing = await deps.submissions.findByIdempotencyKey(
           tx,
           workspaceId,
           command.idempotencyKey,
         );
-        throw new DuplicateSubmissionSignal(existing);
+        throw new DuplicateSubmissionRollback();
       }
 
       const consent = (purpose: ConsentRecord['purpose'], granted: boolean): ConsentRecord => ({
@@ -370,6 +375,7 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
     // 'unavailable' (Redis down): carry on, the database UNIQUE is the second barrier.
     const ownsClaim = claim.status === 'claimed';
 
+    const duplicate: DuplicateProbe = { existing: undefined };
     try {
       // Step 10 — rate limit by e-mail, after the replay check so retries do not count.
       const emailRefusal = rateLimited('email', await deps.rateLimiter.checkEmail(snapshot.email));
@@ -392,6 +398,7 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
           ephemeralId: verification.ephemeralId,
         },
         eventId,
+        duplicate,
       );
       if (ownsClaim) {
         await completeQuietly(form.workspaceId, command.idempotencyKey, requestHash, accepted);
@@ -403,8 +410,14 @@ export function createSubmitLead(deps: SubmitLeadDependencies): SubmitLead {
       }
       return ok({ accepted, outcome: 'accepted' });
     } catch (error) {
-      if (error instanceof DuplicateSubmissionSignal) {
-        return resolveDuplicate(error.existing, form.workspaceId, command, requestHash, ownsClaim);
+      if (duplicate.existing !== undefined) {
+        return resolveDuplicate(
+          duplicate.existing,
+          form.workspaceId,
+          command,
+          requestHash,
+          ownsClaim,
+        );
       }
       if (ownsClaim) {
         await releaseQuietly(form.workspaceId, command.idempotencyKey);

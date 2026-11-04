@@ -72,6 +72,8 @@ export class FakeUnitOfWork implements UnitOfWork {
   rolledBack = 0;
   /** When set, `run` rejects before opening a transaction (database down). */
   failure: Error | null = null;
+  /** Mimics drivers that replace the rejection of the work with their own error. */
+  wrapRejections = false;
 
   readonly #registry: TransactionRegistry;
   readonly #participants: readonly Transactional[];
@@ -104,7 +106,7 @@ export class FakeUnitOfWork implements UnitOfWork {
         restore();
       }
       this.rolledBack += 1;
-      throw error;
+      throw this.wrapRejections ? new Error('transaction aborted', { cause: error }) : error;
     } finally {
       this.#registry.close(tx);
     }
