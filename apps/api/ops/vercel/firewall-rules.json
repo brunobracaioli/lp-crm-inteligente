@@ -1,0 +1,77 @@
+{
+  "$comment": "Vercel WAF custom rules as code (wave 6b). Edge layer in front of the app-level limits (Upstash): it sheds floods before a function is invoked, it does not replace them. Applied with scripts/vercel-firewall.ts (prints staged CLI commands; the owner reviews `vercel firewall diff` and publishes). Rule names are the identity: every rule here starts with `lp-`.",
+  "rules": [
+    {
+      "name": "lp-leads-methods",
+      "description": "POST /v1/leads only accepts POST and the CORS preflight; anything else is denied at the edge.",
+      "conditionGroup": [
+        {
+          "conditions": [
+            { "type": "path", "op": "eq", "value": "/v1/leads" },
+            { "type": "method", "op": "neq", "value": "POST" },
+            { "type": "method", "op": "neq", "value": "OPTIONS" }
+          ]
+        }
+      ],
+      "action": { "mitigate": { "action": "deny" } }
+    },
+    {
+      "name": "lp-leads-ip-rate",
+      "description": "Coarse per-IP ceiling on lead submissions (app limit is 5 per 10 min per IP; this only stops floods).",
+      "conditionGroup": [
+        {
+          "conditions": [
+            { "type": "path", "op": "eq", "value": "/v1/leads" },
+            { "type": "method", "op": "eq", "value": "POST" }
+          ]
+        }
+      ],
+      "action": {
+        "mitigate": {
+          "action": "rate_limit",
+          "rateLimit": {
+            "algo": "fixed_window",
+            "window": 60,
+            "limit": 20,
+            "keys": ["ip"],
+            "action": "rate_limit"
+          }
+        }
+      }
+    },
+    {
+      "name": "lp-internal-methods",
+      "description": "QStash callbacks under /internal/ are POST only.",
+      "conditionGroup": [
+        {
+          "conditions": [
+            { "type": "path", "op": "pre", "value": "/internal/" },
+            { "type": "method", "op": "neq", "value": "POST" }
+          ]
+        }
+      ],
+      "action": { "mitigate": { "action": "deny" } }
+    },
+    {
+      "name": "lp-crm-ip-rate",
+      "description": "Per-IP ceiling on the staff API; per-user quotas (120 read / 30 write per minute) stay in the app.",
+      "conditionGroup": [
+        {
+          "conditions": [{ "type": "path", "op": "pre", "value": "/v1/crm/" }]
+        }
+      ],
+      "action": {
+        "mitigate": {
+          "action": "rate_limit",
+          "rateLimit": {
+            "algo": "fixed_window",
+            "window": 60,
+            "limit": 300,
+            "keys": ["ip"],
+            "action": "rate_limit"
+          }
+        }
+      }
+    }
+  ]
+}

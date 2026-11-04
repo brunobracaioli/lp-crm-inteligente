@@ -8,6 +8,7 @@ export type MetricName =
   | 'ratelimit.blocked'
   | 'ratelimit.fail_open'
   | 'outbox.lag_s'
+  | 'outbox.dead'
   | 'delivery.result'
   | 'auth.qstash_signature_invalid'
   | 'ai.cost_usd';

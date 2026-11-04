@@ -1,0 +1,84 @@
+{
+  "$comment": "Vercel Monitors as code (wave 6b alerts). One entry per alert of docs/plan Onda 6b. Applied per monitor with `vercel monitors add --project <project> --body <file>`; scripts/vercel-monitors.ts writes one body file per monitor. Custom metric names must match what the code emits (checked by test/ops/vercel-ops.test.ts).",
+  "monitors": [
+    {
+      "type": "custom",
+      "name": "lp-api-5xx",
+      "severity": "high",
+      "evaluation": {
+        "window": "5m",
+        "query": {
+          "metrics": {
+            "errors": {
+              "metric": "vercel.request.count",
+              "aggregation": "count",
+              "filter": "httpStatus >= 500"
+            }
+          },
+          "outputs": ["errors"]
+        }
+      },
+      "trigger": { "type": "threshold", "output": "errors", "operator": "gt", "threshold": 5 }
+    },
+    {
+      "type": "custom",
+      "name": "lp-antibot-failures",
+      "severity": "medium",
+      "evaluation": {
+        "window": "5m",
+        "query": {
+          "metrics": {
+            "failures": { "metric": "antibot.failures", "aggregation": "count" }
+          },
+          "outputs": ["failures"]
+        }
+      },
+      "trigger": { "type": "threshold", "output": "failures", "operator": "gt", "threshold": 50 }
+    },
+    {
+      "type": "custom",
+      "name": "lp-outbox-lag",
+      "severity": "high",
+      "evaluation": {
+        "window": "15m",
+        "query": {
+          "metrics": {
+            "lag": { "metric": "outbox.lag_s", "aggregation": "max" }
+          },
+          "outputs": ["lag"]
+        }
+      },
+      "trigger": { "type": "threshold", "output": "lag", "operator": "gt", "threshold": 600 }
+    },
+    {
+      "type": "custom",
+      "name": "lp-deliveries-dead",
+      "severity": "high",
+      "evaluation": {
+        "window": "15m",
+        "query": {
+          "metrics": {
+            "dead": { "metric": "delivery.result", "aggregation": "count", "filter": "status:dead" }
+          },
+          "outputs": ["dead"]
+        }
+      },
+      "trigger": { "type": "threshold", "output": "dead", "operator": "gt", "threshold": 0 }
+    },
+    {
+      "type": "custom",
+      "name": "lp-outbox-dead",
+      "severity": "high",
+      "evaluation": {
+        "window": "15m",
+        "query": {
+          "metrics": {
+            "dead": { "metric": "outbox.dead", "aggregation": "count" }
+          },
+          "outputs": ["dead"]
+        }
+      },
+      "trigger": { "type": "threshold", "output": "dead", "operator": "gt", "threshold": 0 }
+    }
+  ]
+}

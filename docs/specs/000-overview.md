@@ -196,7 +196,7 @@ unidade de trabalho (transação) — ver ADR-0001.
 - `X-Request-Id` aceito do cliente se for UUID válido, senão gerado; propagado ao QStash
   (header `Upstash-Forward-X-Request-Id`) e às chamadas de terceiros quando suportado.
 - Métricas: `lead_capture.requests{outcome}`, `lead_capture.latency_ms`,
-  `antibot.failures`, `ratelimit.blocked{scope}`, `outbox.lag_s`,
+  `antibot.failures`, `ratelimit.blocked{scope}`, `outbox.lag_s`, `outbox.dead{reason}`,
   `delivery.result{destination,status}`, `ai.cost_usd` (wave 11).
 - Audit log estruturado (`core.audit_log`) para: lead criado/atualizado, mudança de
   estágio/dono, exportação, anonimização, login staff (wave 9).
