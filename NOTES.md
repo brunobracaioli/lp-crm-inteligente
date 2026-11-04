@@ -29,6 +29,15 @@
   tracking — **decisão do dono**. Novas envs: `DEFAULT_WORKSPACE_ID` (obrigatória fora de dev), `GA4_MP_ENABLED`
   (o template `.env.example` precisa delas; `.env*` é editado só pelo dono). Falta para ✅: preview, aplicar o
   schedule (`apps/api/scripts/qstash-schedules.ts --apply`, ação externa) e AC-TR-01 manual no Meta Test Events.
+- 2026-11-04 — **Onda 6a** ✅ (branch `feat/wave-6a-hardening`, sobre a 5b): runbooks (flood, rotação de segredos,
+  dead letters), `perf/lead-capture.js` (k6 validado contra Prism local), `security/zap/` (baseline passivo; não
+  executado, sem Docker) e revisão do threat model (`backend-v1.md`, N1–N14). N4/N9 já resolvidos na 4/5b; N6
+  corrigido (redação de `company`, `job_title`, `company_website`, `hp`, `fields`, `body`).
+  **Decisões do dono abertas pela revisão:** N1 — limites de IP (5/10 min) impedem medir AC-LC-19 com k6: perfil de
+  limite só no preview ou bypass de teste? N2 — as chaves de teste do Turnstile devolvem `hostname: localhost` e
+  `action: test`, que o adapter recusa: o preview usa chaves reais com o hostname do preview (recomendado) ou um
+  modo de teste explícito? Para a 6b: N3 (cota por form antes do Turnstile), N5 (prazo total vs `maxDuration`),
+  N10 (headers em respostas geradas pela plataforma via `vercel.json`).
 - Pendências que continuam para a **9b**: 7 códigos novos do draft.3 em `platform/errors/problem.ts`; CORS separado
   para o CRM web.
 - Pendências para **5b / 6b**: `gaClientId` no port de tracking e flag `GA4_MP_ENABLED`; sweeper recebe o
@@ -54,7 +63,7 @@
 | 4 | Slice `POST /v1/leads` + preview | 🟡 código pronto; falta preview |
 | 5a | Tracking isolado (domínio, CAPI client, assinatura QStash) | ✅ |
 | 5b | Tracking wiring (outbox, rotas internas, sweeper) | 🟡 código pronto; falta preview |
-| 6a | Hardening sem conflito (runbooks, k6, ZAP) | ⬜ |
+| 6a | Hardening sem conflito (runbooks, k6, ZAP) | ✅ |
 | 6b | Hardening & operação (retenção, `anonymize_lead`, Firewall, alertas) | ⬜ |
 | 7a | LP contra mock (Codex) | ⬜ |
 | 7b | LP integrada ao preview (Codex) | ⬜ |

@@ -17,7 +17,7 @@
 | 4 | Slice `POST /v1/leads` ponta a ponta + deploy preview | Claude (principal) | 1, 2, 3 | 5a, 7a | 🟡 |
 | 5a | Tracking isolado: domínio (consentimento, hashing com vetores Meta), `meta-capi-client`, `qstash-signature`, `qstash-publisher` — só unit/MSW | subagent Sonnet | 0 | 4, 7a | ✅ |
 | 5b | Tracking wiring: rotas `/internal/v1/outbox/*`, `DispatchOutboxEvent`/`SweepOutbox` com Postgres, publish pós-commit, schedule IaC | Claude (principal) | 4, 5a | 6a, 7b, 8a | 🟡 |
-| 6a | Hardening sem conflito: runbooks, roteiro k6, config ZAP, revisão do threat model | subagent Sonnet | 4 | 5b, 7b, 8a | ⬜ |
+| 6a | Hardening sem conflito: runbooks, roteiro k6, config ZAP, revisão do threat model | subagent Sonnet | 4 | 5b, 7b, 8a | ✅ |
 | 6b | Hardening com conflito: migration de retenção + `crm.anonymize_lead`, Firewall como código, alertas, execução k6/ZAP | Claude (principal) | 5b, 6a | 7b, 8a | ⬜ |
 | 7a | LP + formulário + Turnstile contra mock do OpenAPI (Prism) | Codex | 0 | 1–6 | ⬜ |
 | 7b | LP integrada ao preview da API | Codex | 4, 7a | 5b, 6, 8a | ⬜ |
