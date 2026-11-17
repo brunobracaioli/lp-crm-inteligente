@@ -17,7 +17,7 @@
     "verify": "scripts/verify.sh full"
   },
   "devDependencies": {
-    "@redocly/cli": "2.71.2",
+    "@redocly/cli": "2.77.0",
     "prettier": "3.9.10"
   }
 }
